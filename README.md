@@ -2,7 +2,7 @@
 更方便的塞壬唱片音乐下载器，可下载塞壬唱片官网无损音质版本的音乐/A more convenient Siren Records music downloader that can download lossless-quality music from the official Siren Records website.
 
 可下载单曲、专辑、ALL！支持搜索，包含歌词与封面。
-默认将wav转换为flac。
+可将wav转换为flac。
 
 
 v5.4
@@ -15,7 +15,7 @@ v5.4
 
 优化搜索区域、标题栏和列表布局
 
-优化下载队列渲染和搜索动画，降低了性能开销
+优化下载队列渲染和搜索动画，降低了整体的性能开销
 
 修复了已知问题
 
