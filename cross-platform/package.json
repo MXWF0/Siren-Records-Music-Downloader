@@ -1,0 +1,37 @@
+{
+  "name": "siren-records-cross-platform",
+  "private": true,
+  "version": "1.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node scripts/web-server.mjs",
+    "dev": "vite --host 0.0.0.0 --port 1420",
+    "build": "node scripts/update-catalog-cache.mjs && vue-tsc --noEmit && vite build && node scripts/prepare-static-dist.mjs",
+    "web": "npm run build && node scripts/web-server.mjs",
+    "web:serve": "node scripts/web-server.mjs",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "bundle": "tauri build",
+    "bundle:windows": "tauri build --bundles nsis,msi",
+    "bundle:macos": "tauri build --bundles app,dmg",
+    "bundle:linux": "tauri build --bundles appimage,deb",
+    "test": "vitest run",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-store": "^2.0.0",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@vitejs/plugin-vue": "^5.2.0",
+    "typescript": "~5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^2.2.0"
+  }
+}

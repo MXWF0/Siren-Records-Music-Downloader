@@ -1,0 +1,70 @@
+name: Build desktop bundles
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  bundle:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            bundles: nsis,msi
+          - name: macOS Intel
+            os: macos-13
+            bundles: app,dmg
+          - name: macOS Apple Silicon
+            os: macos-14
+            bundles: app,dmg
+          - name: Linux x64
+            os: ubuntu-22.04
+            bundles: appimage,deb
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cross-platform/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        working-directory: cross-platform
+        run: npm ci
+
+      - name: Build native installer
+        working-directory: cross-platform
+        run: npm run bundle -- --bundles ${{ matrix.bundles }}
+
+      - name: Upload distributable files
+        uses: actions/upload-artifact@v4
+        with:
+          name: Siren-Records-${{ matrix.name }}
+          path: cross-platform/src-tauri/target/release/bundle/**
+          if-no-files-found: error

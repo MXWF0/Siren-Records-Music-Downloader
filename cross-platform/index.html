@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <script>
+      // Set this in a static deployment when the proxy is hosted separately.
+      // Leave it empty when the page and /api functions share the same origin.
+      window.__SIREN_API_BASE__ = window.__SIREN_API_BASE__ || '';
+      function showStaticError(message) {
+        const app = document.getElementById('app');
+        if (!app) {
+          window.addEventListener('DOMContentLoaded', () => showStaticError(message), { once: true });
+          return;
+        }
+        if (app.childElementCount) return;
+        app.innerHTML = `<main style="max-width:36rem;margin:16vh auto;padding:2rem;font:16px system-ui,sans-serif;line-height:1.7;color:#18395d;background:#fff;border:1px solid #d8e3ee;border-radius:16px;box-shadow:0 15px 40px rgba(33,58,85,.12)"><h1 style="margin:0 0 .6rem;font-size:1.35rem">页面加载失败</h1><p style="margin:0;color:#6c7f93">${message || '请确认已保留 dist 文件夹中的全部文件，然后重新打开 index.html。'}</p></main>`;
+      }
+      window.addEventListener('error', (event) => showStaticError(event.error?.message || event.message));
+      window.addEventListener('unhandledrejection', (event) => showStaticError(event.reason?.message || '页面初始化失败'));
+      if (location.protocol === 'file:' && !location.pathname.replace(/\\/g, '/').includes('/dist/')) {
+        const target = new URL('./dist/index.html', location.href);
+        document.write(`<style>#static-launcher{font:16px system-ui,sans-serif;max-width:34rem;margin:18vh auto;padding:2rem;color:#18395d;background:#f4f8fd;border-radius:16px;text-align:center}#static-launcher a{color:#126de8}</style><main id="static-launcher">正在打开已构建的网页版本。<br><a href="${target.href}">若未自动打开，请点此进入</a></main>`);
+        location.replace(target);
+      }
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f8fd" />
+    <title>塞壬唱片下载器</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript><main id="static-launcher">网页版本需要启用 JavaScript。<a href="./dist/index.html">打开构建后的页面</a></main></noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
