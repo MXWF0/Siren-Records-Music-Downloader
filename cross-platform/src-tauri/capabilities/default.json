@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main window permissions for settings and directory selection",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "core:window:allow-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-unmaximize",
+    "dialog:allow-open",
+    "store:default"
+  ]
+}

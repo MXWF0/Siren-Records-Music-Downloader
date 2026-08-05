@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": null,
+  "functions": {
+    "api/catalog.mjs": {
+      "maxDuration": 20
+    },
+    "api/audio.mjs": {
+      "maxDuration": 60
+    },
+    "api/audio/[id].mjs": {
+      "maxDuration": 60
+    }
+  }
+}
