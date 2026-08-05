@@ -292,7 +292,7 @@ export const webPlatform: PlatformBridge = {
     return {
       os: navigator.platform || 'Web',
       arch: '浏览器管理',
-      appVersion: 'v1.1',
+      appVersion: 'v1.2',
       runtime: location.protocol === 'file:'
         ? (apiBase ? 'Web 静态预览（远程代理）' : 'Web 静态预览（下载需代理）')
         : (apiBase ? 'Web 远程代理模式' : 'Web 同源代理模式')

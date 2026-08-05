@@ -1,6 +1,6 @@
 [package]
 name = "siren-records-cross-platform"
-version = "1.1.0"
+version = "1.2.0"
 description = "Cross-platform Siren Records music downloader"
 authors = ["MXWF0"]
 edition = "2021"
