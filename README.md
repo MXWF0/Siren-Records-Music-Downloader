@@ -7,8 +7,13 @@
 
 新增了web分支版，理论上支持 Windows、macOS 和 Linux。
 由于目前缺少相关测试设备，部分使用场景尚未充分测试。  
-macOS及Linux用户可以尝试使用本版本。  
-Windows 用户建议优先使用下方的 v5.5 版本，该版本已优化语音相关功能。
+macOS及Linux用户可以尝试使用本版本。 
+
+web版已做成网站，复制链接后到浏览器直接打开，理论支持全平台，包括手机端，但还是会有一些bug
+部分界面与功能和原版不同
+https://mxwf0.github.io/Siren-Records-Music-Downloader/
+
+Windows用户建议优先使用下方的 v5.5 版本。
 
 v5.5
 
