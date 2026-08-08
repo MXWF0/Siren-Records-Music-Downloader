@@ -58,11 +58,17 @@ interface TerminalMessage {
   type: 'complete' | 'cancelled' | 'failed';
   requestId: string;
   message?: string;
+  errorName?: string;
+  errorStack?: string;
   loaded?: number;
   total?: number | null;
 }
 
-type WorkerResponse = ResponseMessage | ChunkMessage | BlobMessage | ProgressMessage | TerminalMessage;
+interface ReadyMessage {
+  type: 'ready';
+}
+
+type WorkerResponse = ReadyMessage | ResponseMessage | ChunkMessage | BlobMessage | ProgressMessage | TerminalMessage;
 
 interface WorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<WorkerRequest>) => void): void;
@@ -71,6 +77,31 @@ interface WorkerScope {
 
 const workerScope = self as unknown as WorkerScope;
 const controllers = new Map<string, AbortController>();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object');
+}
+
+function isWorkerRequest(value: unknown): value is WorkerRequest {
+  if (!isRecord(value) || typeof value.type !== 'string' || typeof value.requestId !== 'string') return false;
+  if (value.type === 'cancel') return true;
+  return value.type === 'start'
+    && typeof value.endpoint === 'string'
+    && (value.mode === 'stream' || value.mode === 'blob')
+    && (value.range === undefined || typeof value.range === 'string');
+}
+
+function errorDetails(error: unknown) {
+  if (error instanceof Error) return { message: error.message, name: error.name, stack: error.stack };
+  if (isRecord(error)) {
+    return {
+      message: typeof error.message === 'string' ? error.message : String(error),
+      name: typeof error.name === 'string' ? error.name : 'Error',
+      stack: typeof error.stack === 'string' ? error.stack : undefined
+    };
+  }
+  return { message: String(error || '下载失败'), name: 'Error', stack: undefined };
+}
 
 function post(message: WorkerResponse, transfer?: Transferable[]) {
   workerScope.postMessage(message, transfer);
@@ -132,7 +163,10 @@ async function runDownload(message: StartMessage) {
   let total: number | null = null;
   try {
     const response = await fetchWithRetry(message, controller.signal);
-    if (!response.ok) throw new Error(await responseError(response));
+    if (!response.ok) {
+      const detail = await responseError(response);
+      throw new Error(`HTTP ${response.status}${detail && !/^HTTP\s+\d+/i.test(detail) ? `：${detail}` : ''}`);
+    }
 
     const totalHeader = Number(response.headers.get('content-length'));
     total = Number.isFinite(totalHeader) && totalHeader >= 0 ? totalHeader : null;
@@ -173,10 +207,21 @@ async function runDownload(message: StartMessage) {
     if (isAbort(error, controller.signal)) {
       post({ type: 'cancelled', requestId: message.requestId });
     } else {
+      const details = errorDetails(error);
+      console.error('[SirenRecords] web download worker failed', {
+        requestId: message.requestId,
+        endpoint: message.endpoint,
+        errorType: details.name,
+        errorMessage: details.message,
+        errorStack: details.stack,
+        time: new Date().toISOString()
+      }, error);
       post({
         type: 'failed',
         requestId: message.requestId,
-        message: error instanceof Error ? error.message : String(error || '下载失败'),
+        message: details.message,
+        errorName: details.name,
+        errorStack: details.stack,
         loaded,
         total
       });
@@ -188,9 +233,17 @@ async function runDownload(message: StartMessage) {
 
 workerScope.addEventListener('message', (event) => {
   const message = event.data;
+  if (!isWorkerRequest(message)) {
+    console.error('[SirenRecords] web download worker received an invalid message', message);
+    return;
+  }
   if (message.type === 'cancel') {
     controllers.get(message.requestId)?.abort();
     return;
   }
   void runDownload(message);
 });
+
+// A small boot message makes module-loading failures distinguishable from a
+// network failure when the main thread is debugging a static deployment.
+post({ type: 'ready' });
