@@ -11,10 +11,16 @@ describe('normalizeSettings', () => {
       separateDirectory: false,
       groupByDownload: false
     })).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       separateDirectory: false,
-      groupByDownload: false
+      groupByDownload: false,
+      concurrentDownloads: 2
     });
+  });
+
+  it('clamps concurrent downloads to the supported range', () => {
+    expect(normalizeSettings({ concurrentDownloads: 9 }).concurrentDownloads).toBe(3);
+    expect(normalizeSettings({ concurrentDownloads: 0 }).concurrentDownloads).toBe(1);
   });
 
   it('ignores removed download options from legacy settings', () => {

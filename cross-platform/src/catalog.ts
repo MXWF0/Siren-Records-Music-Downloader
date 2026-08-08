@@ -12,7 +12,6 @@ export interface Song {
   albumName: string;
   artist?: string;
   duration?: number;
-  sourceUrl?: string;
   lyricUrl?: string;
   coverUrl?: string;
   coverDeUrl?: string;
@@ -26,7 +25,6 @@ export interface CatalogData {
 export interface OfficialCatalogPayload {
   albums: unknown;
   songs: unknown;
-  details?: Record<string, unknown>;
 }
 
 const apiRoot = 'https://monster-siren.hypergryph.com/api';
@@ -87,17 +85,10 @@ export async function loadCatalog(
         coverDeUrl: typeof album.coverDeUrl === 'string' ? album.coverDeUrl : undefined
       } satisfies Album];
     }));
-    const detailRows = payload.details && typeof payload.details === 'object'
-      ? payload.details
-      : {};
     const songs = songRows.map((value) => {
       const listSong = value as Record<string, unknown>;
       const cid = String(listSong.cid ?? '');
-      const detail = detailRows[cid];
-      const detailSong = detail && typeof detail === 'object'
-        ? ((detail as { data?: unknown }).data ?? detail) as Record<string, unknown>
-        : {};
-      const song = { ...listSong, ...detailSong };
+      const song = listSong;
       const albumCid = String(song.albumCid ?? '');
       return {
         cid,
@@ -110,7 +101,6 @@ export async function loadCatalog(
             ? song.artists.filter((artist): artist is string => typeof artist === 'string').join(' ')
             : undefined,
         duration: typeof song.duration === 'number' ? song.duration : undefined,
-        sourceUrl: typeof song.sourceUrl === 'string' ? song.sourceUrl : undefined,
         lyricUrl: typeof song.lyricUrl === 'string' ? song.lyricUrl : undefined,
         coverUrl: albums[albumCid]?.coverUrl,
         coverDeUrl: albums[albumCid]?.coverDeUrl

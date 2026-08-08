@@ -3,20 +3,26 @@ import { readFile, stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { extname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  audioExtension,
+  audioFileName,
+  corsHeaders,
+  enforceRequestPolicy,
+  fetchOfficialAudio,
+  fetchOfficialSong,
+  findAlbumName,
+  getCatalog,
+  sendJson,
+  validRangeHeader,
+  validSongId
+} from './official-proxy.mjs';
 
 const scriptDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const projectDirectory = resolve(scriptDirectory, '..');
 const distDirectory = resolve(projectDirectory, 'dist');
-const apiRoot = 'https://monster-siren.hypergryph.com/api';
 const platformPort = process.env.PORT || '';
 const host = process.env.SIREN_WEB_HOST || (platformPort ? '0.0.0.0' : '127.0.0.1');
 const port = Number.parseInt(process.env.SIREN_WEB_PORT || platformPort || '4173', 10);
-const catalogTtlMs = 90_000;
-const staleCatalogTtlMs = 30 * 60_000;
-const allowOrigin = process.env.SIREN_WEB_ALLOW_ORIGIN || '*';
-
-let catalogCache;
-let catalogRequest;
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -25,165 +31,101 @@ const contentTypes = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
-  '.ttf': 'font/ttf',
   '.woff2': 'font/woff2'
 };
 
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-    'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length, Content-Type',
-    Vary: 'Origin'
-  };
+function endPreflight(request, response, scope) {
+  if (!enforceRequestPolicy(request, response, scope, { count: false })) return;
+  response.writeHead(204, corsHeaders(request)).end();
 }
 
-function sendJson(response, status, body) {
-  response.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    ...corsHeaders()
-  });
-  response.end(JSON.stringify(body));
-}
-
-function sendError(response, status, message) {
-  sendJson(response, status, { error: message });
-}
-
-function safeFileName(value, fallback) {
-  const cleaned = String(value || '')
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/[. ]+$/g, '')
-    .slice(0, 120);
-  return cleaned || fallback;
-}
-
-function validSongId(value) {
-  return /^[A-Za-z0-9_-]+$/.test(value);
-}
-
-async function requestOfficial(path) {
-  const response = await fetch(`${apiRoot}${path}`, {
-    headers: {
-      Accept: 'application/json',
-      'User-Agent': 'Siren-Records-Web-Proxy/1.0'
-    },
-    signal: AbortSignal.timeout(20_000)
-  });
-  if (!response.ok) throw new Error(`官网返回 HTTP ${response.status}`);
-  return response.json();
-}
-
-async function getCatalog() {
-  const now = Date.now();
-  if (catalogCache && now - catalogCache.updatedAt < catalogTtlMs) return catalogCache.payload;
-  if (catalogRequest) return catalogRequest;
-  catalogRequest = (async () => {
-    try {
-      const [albums, songs] = await Promise.all([
-        requestOfficial('/albums'),
-        requestOfficial('/songs')
-      ]);
-      const payload = { albums, songs };
-      catalogCache = { payload, updatedAt: Date.now() };
-      return payload;
-    } catch (error) {
-      if (catalogCache && Date.now() - catalogCache.updatedAt < staleCatalogTtlMs) return catalogCache.payload;
-      throw error;
-    } finally {
-      catalogRequest = undefined;
-    }
-  })();
-  return catalogRequest;
-}
-
-async function handleCatalog(response) {
+async function handleCatalog(request, response, headOnly) {
+  if (!enforceRequestPolicy(request, response, 'catalog', { count: !headOnly })) return;
   try {
     const payload = await getCatalog();
-    sendJson(response, 200, payload);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : '未知网络错误';
-    sendError(response, 502, `无法获取官网目录：${reason}`);
-  }
-}
-
-async function fetchOfficialAudio(id) {
-  let song = (await requestOfficial(`/song/${encodeURIComponent(id)}`))?.data;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const sourceUrl = song?.sourceUrl;
-    if (typeof sourceUrl !== 'string' || !sourceUrl) throw new Error('歌曲没有可用音频地址');
-    const source = new URL(sourceUrl);
-    if (source.protocol !== 'https:') throw new Error('歌曲音频地址不安全');
-
-    const upstream = await fetch(source, {
-      headers: { Accept: 'audio/wav, audio/*;q=0.9, */*;q=0.1' },
-      signal: AbortSignal.timeout(60_000)
+    response.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
+      ...corsHeaders(request)
     });
-    const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
-    if (upstream.ok && upstream.body && !contentType.includes('text/html')) return { song, upstream };
-    if (attempt === 0 && [401, 403, 404].includes(upstream.status)) {
-      // CDN authorization paths rotate. Fetch the song endpoint again before reporting a failure.
-      song = (await requestOfficial(`/song/${encodeURIComponent(id)}`))?.data;
-      continue;
-    }
-    throw new Error(`音频请求失败：HTTP ${upstream.status}`);
+    response.end(headOnly ? undefined : JSON.stringify(payload));
+  } catch (error) {
+    if (response.destroyed) return;
+    const reason = error instanceof Error ? error.message : '未知网络错误';
+    sendJson(response, 502, { error: `无法获取官网目录：${reason}` }, request);
   }
-  throw new Error('音频请求失败');
 }
 
-async function handleAudio(response, encodedId) {
+async function handleAudio(request, response, rawId) {
+  if (!enforceRequestPolicy(request, response, 'audio')) return;
   let id;
   try {
-    id = decodeURIComponent(encodedId);
+    id = decodeURIComponent(rawId);
   } catch {
-    sendError(response, 400, '歌曲编号无效');
+    sendJson(response, 400, { error: '歌曲编号无效' }, request);
     return;
   }
   if (!validSongId(id)) {
-    sendError(response, 400, '歌曲编号无效');
+    sendJson(response, 400, { error: '歌曲编号无效' }, request);
     return;
   }
 
+  const controller = new AbortController();
+  response.on('close', () => controller.abort());
   try {
-    const { song, upstream } = await fetchOfficialAudio(id);
-
+    const { song, sourceUrl, upstream } = await fetchOfficialAudio(id, {
+      signal: controller.signal,
+      range: validRangeHeader(request.headers.range)
+    });
     let albumName = typeof song?.albumName === 'string' ? song.albumName : '';
     if (!albumName && song?.albumCid) {
       try {
-        const catalog = await getCatalog();
-        const albumRows = Array.isArray(catalog?.albums?.data) ? catalog.albums.data : [];
-        const album = albumRows.find((entry) => String(entry?.cid ?? '') === String(song.albumCid));
-        if (typeof album?.name === 'string') albumName = album.name;
+        albumName = findAlbumName(await getCatalog(), song.albumCid);
       } catch {
-        // The song endpoint is sufficient to download; a missing album name only affects the filename.
+        // Album metadata only affects the suggested filename.
       }
     }
-    const name = safeFileName(`[${albumName || '塞壬唱片'}] ${song?.name || id}`, id);
-    const type = upstream.headers.get('content-type') || 'audio/wav';
-    const length = upstream.headers.get('content-length');
-    response.writeHead(200, {
-      'Content-Type': type,
-      'Content-Disposition': `attachment; filename="${id}.wav"; filename*=UTF-8''${encodeURIComponent(name)}.wav`,
-      ...(length ? { 'Content-Length': length } : {}),
+
+    const contentType = upstream.headers.get('content-type') || 'audio/wav';
+    const extension = audioExtension(contentType, sourceUrl);
+    const fileName = audioFileName(song, albumName, id, extension);
+    const contentLength = upstream.headers.get('content-length');
+    const contentRange = upstream.headers.get('content-range');
+    const acceptRanges = upstream.headers.get('accept-ranges');
+    response.writeHead(upstream.status === 206 ? 206 : 200, {
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${id}.${extension}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      ...(contentLength ? { 'Content-Length': contentLength } : {}),
+      ...(contentRange ? { 'Content-Range': contentRange } : {}),
+      ...(acceptRanges ? { 'Accept-Ranges': acceptRanges } : { 'Accept-Ranges': 'bytes' }),
       'Cache-Control': 'no-store',
-      ...corsHeaders()
+      ...corsHeaders(request)
     });
     const stream = Readable.fromWeb(upstream.body);
     response.on('close', () => stream.destroy());
     stream.on('error', () => response.destroy());
     stream.pipe(response);
   } catch (error) {
-    if (response.destroyed) return;
-    if (!response.headersSent) {
-      const reason = error instanceof Error ? error.message : '未知网络错误';
-      sendError(response, 502, `无法下载歌曲：${reason}`);
-    } else {
+    if (response.destroyed || response.headersSent) {
       response.destroy();
+      return;
     }
+    const reason = error instanceof Error ? error.message : '未知网络错误';
+    sendJson(response, 502, { error: `下载服务暂时不可用：${reason}` }, request);
+  }
+}
+
+async function handleSong(request, response, id) {
+  if (!enforceRequestPolicy(request, response, 'catalog')) return;
+  if (!validSongId(id)) {
+    sendJson(response, 400, { error: '歌曲编号无效' }, request);
+    return;
+  }
+  try {
+    sendJson(response, 200, { data: await fetchOfficialSong(id) }, request);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : '未知网络错误';
+    sendJson(response, 502, { error: `无法获取歌曲详情：${reason}` }, request);
   }
 }
 
@@ -204,7 +146,12 @@ async function serveStatic(response, pathname, headOnly) {
     const metadata = await stat(filePath);
     if (!metadata.isFile()) throw new Error('not file');
     const type = contentTypes[extname(filePath).toLowerCase()] || 'application/octet-stream';
-    response.writeHead(200, { 'Content-Type': type, 'Content-Length': metadata.size, 'Cache-Control': 'public, max-age=3600' });
+    response.writeHead(200, {
+      'Content-Type': type,
+      'Content-Length': metadata.size,
+      'Cache-Control': 'public, max-age=3600',
+      'X-Content-Type-Options': 'nosniff'
+    });
     if (headOnly) response.end();
     else response.end(await readFile(filePath));
   } catch {
@@ -216,27 +163,35 @@ async function serveStatic(response, pathname, headOnly) {
 const server = createServer(async (request, response) => {
   const method = request.method || 'GET';
   const url = new URL(request.url || '/', `http://${host}:${port}`);
-  if (method === 'OPTIONS') {
-    response.writeHead(204, corsHeaders()).end();
+  const audioRoute = url.pathname === '/api/audio' || url.pathname.startsWith('/api/audio/');
+  const catalogRoute = url.pathname === '/api/catalog';
+  const songRoute = url.pathname === '/api/song';
+
+  if (method === 'OPTIONS' && (audioRoute || catalogRoute || songRoute)) {
+    endPreflight(request, response, audioRoute ? 'audio' : 'catalog');
     return;
   }
   if (method !== 'GET' && method !== 'HEAD') {
-    response.writeHead(405, { Allow: 'GET, HEAD, OPTIONS', ...corsHeaders() }).end();
+    response.writeHead(405, { Allow: 'GET, HEAD, OPTIONS', ...corsHeaders(request) }).end();
     return;
   }
-  if (url.pathname === '/api/catalog') {
-    if (method === 'HEAD') response.writeHead(200, corsHeaders()).end();
-    else await handleCatalog(response);
+  if (catalogRoute) {
+    await handleCatalog(request, response, method === 'HEAD');
     return;
   }
-  if (url.pathname === '/api/audio') {
-    if (method === 'HEAD') response.writeHead(405, { Allow: 'GET', ...corsHeaders() }).end();
-    else await handleAudio(response, url.searchParams.get('id') || '');
+  if (songRoute) {
+    await handleSong(request, response, url.searchParams.get('id') || '');
     return;
   }
-  if (url.pathname.startsWith('/api/audio/')) {
-    if (method === 'HEAD') response.writeHead(405, { Allow: 'GET', ...corsHeaders() }).end();
-    else await handleAudio(response, url.pathname.slice('/api/audio/'.length));
+  if (audioRoute) {
+    if (method === 'HEAD') {
+      sendJson(response, 405, { error: '音频接口仅支持 GET 请求' }, request, { Allow: 'GET, OPTIONS' });
+      return;
+    }
+    const encodedId = url.pathname === '/api/audio'
+      ? url.searchParams.get('id') || ''
+      : url.pathname.slice('/api/audio/'.length);
+    await handleAudio(request, response, encodedId);
     return;
   }
   await serveStatic(response, url.pathname, method === 'HEAD');

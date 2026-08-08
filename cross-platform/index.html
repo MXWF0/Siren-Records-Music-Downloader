@@ -1,10 +1,8 @@
 <!doctype html>
 <html lang="zh-CN">
   <head>
+    <script src="/runtime-config.js"></script>
     <script>
-      // Set this in a static deployment when the proxy is hosted separately.
-      // Leave it empty when the page and /api functions share the same origin.
-      window.__SIREN_API_BASE__ = window.__SIREN_API_BASE__ || '';
       function showStaticError(message) {
         const app = document.getElementById('app');
         if (!app) {
@@ -25,6 +23,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f8fd" />
+    <link rel="preconnect" href="https://web.hycdn.cn" />
+    <link rel="preload" href="/src/assets/fonts/OPPO-Sans-4.0.woff2" as="font" type="font/woff2" crossorigin />
     <title>塞壬唱片下载器</title>
   </head>
   <body>

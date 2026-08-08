@@ -22,9 +22,9 @@ async function toggleMaximize(windowControls?: WindowControls) {
 <template>
   <header class="titlebar" data-tauri-drag-region>
     <button class="titlebar-brand no-drag" type="button" @click="emit('navigate', 'library')">
-      <span class="brand-mark" aria-hidden="true">SR</span>
+      <span class="brand-mark" aria-hidden="true" translate="no">SR</span>
       <span class="titlebar-copy">
-        <small>SIREN RECORDS</small>
+        <small translate="no">SIREN RECORDS</small>
       </span>
     </button>
     <strong class="titlebar-centered">塞壬唱片下载器</strong>

@@ -16,10 +16,7 @@ export interface WindowControls {
 export interface DownloadRequest {
   id: string;
   downloadDirectory: string;
-  outputFormat: 'wav';
   separateDirectory: boolean;
-  /** Optional browser-side hints; native downloads resolve metadata again. */
-  sourceUrl?: string;
   fileName?: string;
 }
 
@@ -36,21 +33,42 @@ export interface DownloadFailure {
   message: string;
 }
 
+export interface PersistedQueueTask {
+  id: string;
+  title: string;
+  album: string;
+  state: 'pending' | 'downloading' | 'failed';
+  force: boolean;
+  fileName?: string;
+  message?: string;
+}
+
+export interface PersistedQueueState {
+  version: 1;
+  paused: boolean;
+  tasks: PersistedQueueTask[];
+}
+
 export interface DownloadEvents {
   progress(value: DownloadProgress): void;
-  complete(value: { id: string }): void;
+  complete(value: { id: string; browserManaged?: boolean }): void;
   failed(value: DownloadFailure): void;
   cancelled(value: { id: string }): void;
 }
 
 export interface PlatformBridge {
   readonly kind: 'tauri' | 'web';
+  readonly maxConcurrentDownloads?: number;
   readonly windowControls?: WindowControls;
   getSettings(): Promise<AppSettings>;
   saveSettings(settings: AppSettings): Promise<void>;
   selectDirectory(): Promise<string | null>;
   validateDownloadDirectory(directory: string): Promise<void>;
   loadOfficialCatalog?(): Promise<{ albums: unknown; songs: unknown }>;
+  loadSongDetails?(id: string): Promise<unknown>;
+  loadDownloadedIds(): Promise<string[]>;
+  loadQueueState(): Promise<PersistedQueueState | null>;
+  saveQueueState(state: PersistedQueueState): Promise<void>;
   getPlatformInfo(): Promise<PlatformInfo>;
   recoverDownloads(downloadDirectory: string): Promise<void>;
   startDownload(request: DownloadRequest): Promise<{ started: boolean }>;
