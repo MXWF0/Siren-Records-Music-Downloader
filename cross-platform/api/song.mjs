@@ -25,7 +25,7 @@ export default async function handler(request, response) {
     return;
   }
   try {
-    sendJson(response, 200, { data: await fetchOfficialSong(id) }, request);
+    sendJson(response, 200, { data: await fetchOfficialSong(id, { includeDuration: true }) }, request);
   } catch (error) {
     const reason = error instanceof Error ? error.message : '未知网络错误';
     sendJson(response, 502, { error: `无法获取歌曲详情：${reason}` }, request);

@@ -249,11 +249,77 @@ export async function fetchOfficialAudio(id, { signal, range = '' } = {}) {
   throw new Error('官网音频服务暂时不可用');
 }
 
+function ascii(bytes, offset, length) {
+  return String.fromCharCode(...bytes.subarray(offset, offset + length));
+}
+
+/** Read duration from a small audio prefix without decoding or transcoding. */
+export function audioDurationFromPrefix(value) {
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
+  if (bytes.length < 16) return undefined;
+
+  if (ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WAVE') {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let byteRate = 0;
+    let dataSize = 0;
+    for (let offset = 12; offset + 8 <= bytes.length;) {
+      const chunk = ascii(bytes, offset, 4);
+      const size = view.getUint32(offset + 4, true);
+      if (chunk === 'fmt ' && size >= 16 && offset + 20 <= bytes.length) byteRate = view.getUint32(offset + 16, true);
+      if (chunk === 'data') {
+        dataSize = size;
+        break;
+      }
+      offset += 8 + size + (size % 2);
+    }
+    const duration = byteRate > 0 && dataSize > 0 ? dataSize / byteRate : 0;
+    return Number.isFinite(duration) && duration > 0 ? duration : undefined;
+  }
+
+  if (ascii(bytes, 0, 4) === 'fLaC' && bytes.length >= 42) {
+    let offset = 4;
+    while (offset + 4 <= bytes.length) {
+      const type = bytes[offset] & 0x7f;
+      const length = (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+      const dataOffset = offset + 4;
+      if (type === 0 && length >= 34 && dataOffset + 18 <= bytes.length) {
+        let packed = 0n;
+        for (let index = 0; index < 8; index += 1) packed = (packed << 8n) | BigInt(bytes[dataOffset + 10 + index]);
+        const sampleRate = Number((packed >> 44n) & 0xfffffn);
+        const totalSamples = Number(packed & ((1n << 36n) - 1n));
+        const duration = sampleRate > 0 ? totalSamples / sampleRate : 0;
+        return Number.isFinite(duration) && duration > 0 ? duration : undefined;
+      }
+      offset = dataOffset + length;
+    }
+  }
+
+  return undefined;
+}
+
+async function readOfficialDuration(sourceUrl, signal) {
+  if (typeof sourceUrl !== 'string' || !sourceUrl || !isAllowedAudioUrl(sourceUrl)) return undefined;
+  const response = await fetch(sourceUrl, {
+    headers: { Range: 'bytes=0-65535', Accept: 'audio/wav, audio/flac, audio/*;q=0.9' },
+    signal: withTimeout(signal, 12_000)
+  });
+  const contentLength = Number(response.headers.get('content-length')) || 0;
+  if (response.status !== 206 || contentLength > 65_536 || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+  return audioDurationFromPrefix(new Uint8Array(await response.arrayBuffer()));
+}
+
 /** Return current public metadata without exposing the short-lived audio URL. */
-export async function fetchOfficialSong(id, { signal } = {}) {
+export async function fetchOfficialSong(id, { signal, includeDuration = false } = {}) {
   const song = (await requestOfficial(`/song/${encodeURIComponent(id)}`, { signal }))?.data;
   if (!song || typeof song !== 'object') throw new Error('歌曲详情暂时不可用');
   const { sourceUrl: _sourceUrl, ...safeSong } = song;
+  if (includeDuration) {
+    const duration = await readOfficialDuration(song.sourceUrl, signal).catch(() => undefined);
+    if (duration) safeSong.duration = duration;
+  }
   return safeSong;
 }
 

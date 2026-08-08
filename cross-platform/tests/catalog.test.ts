@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { formatDuration, loadCatalog } from '../src/catalog';
+import { formatDuration, loadCatalog, normalizeDuration } from '../src/catalog';
 
 describe('catalog helpers', () => {
   it('formats track durations for the song list', () => {
     expect(formatDuration(214)).toBe('3:34');
+    expect(formatDuration(214_000)).toBe('3:34');
+    expect(normalizeDuration('90')).toBe(90);
     expect(formatDuration(undefined)).toBe('—');
   });
 
