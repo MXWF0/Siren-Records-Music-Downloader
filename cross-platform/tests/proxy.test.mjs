@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   audioExtension,
   audioFileName,
+  audioDurationFromPrefix,
   consumeRateLimit,
   corsHeaders,
   fetchOfficialAudio,
@@ -94,6 +95,24 @@ describe('proxy request policy', () => {
     expect(audioExtension('audio/flac', 'https://res01.hycdn.cn/audio.wav')).toBe('flac');
     expect(audioExtension('application/octet-stream', 'https://res01.hycdn.cn/audio.mp3?sign=1')).toBe('mp3');
     expect(audioFileName({ name: 'Track' }, 'Album', '1', 'mp3')).toBe('[Album] Track.mp3');
+  });
+
+  it('reads an exact duration from a WAV header prefix', () => {
+    const bytes = new Uint8Array(44);
+    const view = new DataView(bytes.buffer);
+    bytes.set(new TextEncoder().encode('RIFF'), 0);
+    view.setUint32(4, 44 + 192_000 - 8, true);
+    bytes.set(new TextEncoder().encode('WAVEfmt '), 8);
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 2, true);
+    view.setUint32(24, 48_000, true);
+    view.setUint32(28, 192_000, true);
+    view.setUint16(32, 4, true);
+    view.setUint16(34, 16, true);
+    bytes.set(new TextEncoder().encode('data'), 36);
+    view.setUint32(40, 192_000, true);
+    expect(audioDurationFromPrefix(bytes)).toBe(1);
   });
 
   it('does not expose the signed source URL in song details', async () => {

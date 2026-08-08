@@ -1,6 +1,50 @@
 <!doctype html>
 <html lang="zh-CN">
   <head>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta name="application-version" content="%APP_VERSION%" />
+    <script>
+      (() => {
+        if (!/^https?:$/.test(location.protocol)) return;
+        const currentVersion = '%APP_VERSION%';
+        const versionKey = 'siren-records-web-version';
+        const reloadKey = 'siren-records-version-reload';
+        const currentUrl = new URL(location.href);
+        const forcedVersion = currentUrl.searchParams.get('__app_version');
+
+        if (forcedVersion === currentVersion) {
+          currentUrl.searchParams.delete('__app_version');
+          history.replaceState(null, '', `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+        }
+
+        const previousVersion = localStorage.getItem(versionKey);
+        localStorage.setItem(versionKey, currentVersion);
+        if (previousVersion && previousVersion !== currentVersion && sessionStorage.getItem(reloadKey) !== currentVersion) {
+          sessionStorage.setItem(reloadKey, currentVersion);
+          currentUrl.searchParams.set('__app_version', currentVersion);
+          location.replace(currentUrl.href);
+          return;
+        }
+
+        // Revalidate the tiny entry document once per session. Hashed assets remain cacheable.
+        if (sessionStorage.getItem(reloadKey) === currentVersion) return;
+        sessionStorage.setItem(reloadKey, currentVersion);
+        fetch(new URL(location.pathname, location.origin), { cache: 'reload' })
+          .then((response) => response.ok ? response.text() : '')
+          .then((html) => {
+            const match = html.match(/name=["']application-version["'] content=["']([^"']+)["']/);
+            const latestVersion = match?.[1];
+            if (!latestVersion || latestVersion === currentVersion) return;
+            localStorage.setItem(versionKey, latestVersion);
+            const target = new URL(location.href);
+            target.searchParams.set('__app_version', latestVersion);
+            location.replace(target.href);
+          })
+          .catch(() => undefined);
+      })();
+    </script>
     <script src="/runtime-config.js"></script>
     <script>
       function showStaticError(message) {

@@ -10,6 +10,7 @@ import type {
 const settingsStorageKey = 'siren-records.settings.v1';
 const queueStorageKey = 'siren-records.queue.v1';
 const downloadedStorageKey = 'siren-records.downloaded.v1';
+const catalogStorageKey = 'siren-records.catalog.v1';
 const browserDefaults: AppSettings = { ...defaultSettings, separateDirectory: false };
 const listeners = new Set<DownloadEvents>();
 const activeDownloads = new Map<string, AbortController>();
@@ -43,6 +44,58 @@ let detectedProxyCheckedAt = 0;
 
 function isCatalogPayload(value: unknown): value is { albums: unknown; songs: unknown } {
   return Boolean(value && typeof value === 'object' && 'albums' in value && 'songs' in value);
+}
+
+function readCachedCatalog(): { albums: unknown; songs: unknown } | null {
+  try {
+    const cached = JSON.parse(localStorage.getItem(catalogStorageKey) || 'null') as {
+      updatedAt?: unknown;
+      payload?: unknown;
+    } | null;
+    if (!cached || typeof cached.updatedAt !== 'number' || Date.now() - cached.updatedAt > 24 * 60 * 60_000) return null;
+    return isCatalogPayload(cached.payload) ? cached.payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheCatalog(payload: { albums: unknown; songs: unknown }) {
+  try {
+    localStorage.setItem(catalogStorageKey, JSON.stringify({ updatedAt: Date.now(), payload }));
+  } catch {
+    // Safari private mode and full storage must not prevent catalogue display.
+  }
+}
+
+function delay(milliseconds: number) {
+  return new Promise<void>((resolve) => globalThis.setTimeout(resolve, milliseconds));
+}
+
+async function requestCatalog(endpoint: string) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(endpoint, {
+        cache: 'no-store',
+        credentials: 'omit',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(await readError(response, `HTTP ${response.status}`));
+      const payload = await response.json();
+      if (!isCatalogPayload(payload)) throw new Error('官网目录代理返回了无效数据');
+      cacheCatalog(payload);
+      return payload;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await delay(350);
+    } finally {
+      globalThis.clearTimeout(timeout);
+    }
+  }
+  throw lastError;
 }
 
 async function probeLocalProxy(base: string): Promise<string | null> {
@@ -107,67 +160,16 @@ export function friendlyDownloadError(error: unknown, staticFileMode: boolean) {
   return message || (staticFileMode ? staticDownloadHint : '浏览器下载失败');
 }
 
-function launchBrowserManagedDownload(endpoint: string) {
+function launchBrowserManagedDownload(endpoint: string, suggestedName?: string) {
   const anchor = document.createElement('a');
   anchor.href = endpoint;
+  if (suggestedName) anchor.download = suggestedName;
   anchor.rel = 'noreferrer';
+  anchor.referrerPolicy = 'no-referrer';
   anchor.style.display = 'none';
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-}
-
-async function streamToWritableFile(
-  endpoint: string,
-  request: DownloadRequest,
-  controller: AbortController
-) {
-  const handle = await window.showSaveFilePicker!({
-    suggestedName: request.fileName || `${request.id}.wav`,
-    types: [{
-      description: '官网原始音频',
-      accept: {
-        'audio/wav': ['.wav'],
-        'audio/flac': ['.flac'],
-        'audio/mpeg': ['.mp3'],
-        'audio/mp4': ['.m4a'],
-        'audio/ogg': ['.ogg'],
-        'audio/aac': ['.aac']
-      }
-    }]
-  });
-  const writable = await handle.createWritable();
-  try {
-    const response = await fetch(endpoint, { signal: controller.signal, cache: 'no-store' });
-    const responseType = (response.headers.get('content-type') || '').toLowerCase();
-    if (responseType.includes('text/html')) throw new Error(proxyConfigurationHint);
-    if (!response.ok) throw new Error(await readError(response, `下载服务返回 HTTP ${response.status}`));
-    if (!response.body) throw new Error('浏览器没有返回可读取的音频流');
-
-    const total = Number(response.headers.get('content-length')) || null;
-    const reader = response.body.getReader();
-    const startedAt = performance.now();
-    let loaded = 0;
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      await writable.write(next.value);
-      loaded += next.value.byteLength;
-      const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
-      const rate = loaded / elapsedSeconds;
-      emit('progress', {
-        id: request.id,
-        loaded,
-        total,
-        rate,
-        etaSeconds: total && rate > 0 ? Math.ceil((total - loaded) / rate) : null
-      });
-    }
-    await writable.close();
-  } catch (error) {
-    await writable.abort().catch(() => undefined);
-    throw error;
-  }
 }
 
 async function downloadAudio(request: DownloadRequest, controller: AbortController) {
@@ -180,15 +182,11 @@ async function downloadAudio(request: DownloadRequest, controller: AbortControll
       ? resolveApiUrl(`/api/audio?id=${encodeURIComponent(request.id)}`, apiBase)
       : `/api/audio?id=${encodeURIComponent(request.id)}`;
 
-    const browserManaged = !window.showSaveFilePicker;
-    if (!browserManaged) {
-      await streamToWritableFile(endpoint, request, controller);
-    } else {
-      // Android Chrome and iOS Safari stream through the browser download
-      // manager. The page cannot observe completion, but it also never holds
-      // a complete Blob, ArrayBuffer or decoded AudioBuffer in memory.
-      launchBrowserManagedDownload(endpoint);
-    }
+    // Always hand the response to the browser download manager. Queue tasks are
+    // asynchronous, so a permission-gated file picker is not valid here after
+    // the original click's user activation has expired.
+    const browserManaged = true;
+    launchBrowserManagedDownload(endpoint, request.fileName);
     emit('complete', { id: request.id, browserManaged });
   } catch (error) {
     const userCancelled = error instanceof DOMException && error.name === 'AbortError';
@@ -203,7 +201,7 @@ export const webPlatform: PlatformBridge = {
   kind: 'web',
   // Browser-managed downloads must be launched serially on Android/iOS or
   // their popup/download protection may reject later files.
-  maxConcurrentDownloads: typeof window !== 'undefined' && window.showSaveFilePicker ? 3 : 1,
+  maxConcurrentDownloads: 1,
 
   async getSettings() {
     try { return readStoredSettings(); } catch { return { ...browserDefaults }; }
@@ -223,20 +221,17 @@ export const webPlatform: PlatformBridge = {
 
   async loadOfficialCatalog() {
     const apiBase = await resolveDownloadProxy();
+    const fallback = readCachedCatalog() || bundledCatalogPayload;
     if (location.protocol !== 'file:' || apiBase) {
-      try {
-        const response = await fetch(resolveApiUrl('/api/catalog', apiBase), { cache: 'no-store' });
-        if (response.ok) {
-          const payload = await response.json();
-          if (isCatalogPayload(payload)) return payload;
-          throw new Error('官网目录代理返回了无效数据');
-        }
-        console.warn('实时目录代理不可用，将使用内置目录快照：', await readError(response, `HTTP ${response.status}`));
-      } catch (error) {
-        console.warn('实时目录请求失败，将使用内置目录快照：', error);
-      }
+      const remote = requestCatalog(resolveApiUrl('/api/catalog', apiBase)).catch((error) => {
+        console.warn('实时目录请求失败，将使用本地官方目录快照：', error);
+        return fallback;
+      });
+      // Mobile browsers should display the complete bundled catalogue quickly
+      // while a cold serverless request continues and refreshes the next load.
+      return Promise.race([remote, delay(2_500).then(() => fallback)]);
     }
-    return bundledCatalogPayload;
+    return fallback;
   },
 
   async loadSongDetails(id) {

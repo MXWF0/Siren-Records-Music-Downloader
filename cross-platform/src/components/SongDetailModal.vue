@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import { formatDuration, type Song } from '../catalog';
+import { formatDuration, normalizeDuration, type Song } from '../catalog';
 
 const props = defineProps<{
   song: Song | null;
@@ -18,7 +18,7 @@ const artist = computed(() => {
   if (Array.isArray(detail.value.artists)) return detail.value.artists.filter((value) => typeof value === 'string').join(' / ');
   return props.song?.artist || '塞壬唱片-MSR';
 });
-const duration = computed(() => typeof detail.value.duration === 'number' ? detail.value.duration : props.song?.duration);
+const duration = computed(() => normalizeDuration(detail.value.duration) ?? normalizeDuration(props.song?.duration));
 const coverUrl = computed(() => {
   const remote = typeof detail.value.coverUrl === 'string' ? detail.value.coverUrl : '';
   return remote || props.song?.coverUrl || props.song?.coverDeUrl || '';

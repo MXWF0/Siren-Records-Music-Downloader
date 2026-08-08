@@ -1,0 +1,11 @@
+# Local dependency and build caches are rebuilt by Vercel.
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# Local deployment metadata and transient logs must not be uploaded.
+.vercel/
+*.log
+*.out.log
+.DS_Store

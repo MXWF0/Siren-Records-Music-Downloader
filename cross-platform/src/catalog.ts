@@ -125,9 +125,18 @@ export async function loadCatalog(
   }
 }
 
+export function normalizeDuration(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  // Some metadata providers expose milliseconds while the official proxy
+  // returns seconds. Values over one day are treated as milliseconds.
+  return parsed > 86_400 ? parsed / 1000 : parsed;
+}
+
 export function formatDuration(value?: number): string {
-  if (!value || !Number.isFinite(value)) return '—';
-  const minutes = Math.floor(value / 60);
-  const seconds = Math.floor(value % 60).toString().padStart(2, '0');
+  const normalized = normalizeDuration(value);
+  if (!normalized) return '—';
+  const minutes = Math.floor(normalized / 60);
+  const seconds = Math.floor(normalized % 60).toString().padStart(2, '0');
   return `${minutes}:${seconds}`;
 }

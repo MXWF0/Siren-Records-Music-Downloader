@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { friendlyDownloadError, normalizeApiBase, resolveApiUrl, resolveDownloadProxy } from '../src/platform/web';
+import { friendlyDownloadError, normalizeApiBase, resolveApiUrl, resolveDownloadProxy, webPlatform } from '../src/platform/web';
 
 describe('web download errors', () => {
+  it('always uses the serial browser download manager', () => {
+    expect(webPlatform.maxConcurrentDownloads).toBe(1);
+  });
+
   it('explains rejected origins without exposing backend details', () => {
     const message = friendlyDownloadError(new Error('当前网站没有权限使用此下载接口'), false);
     expect(message).toContain('未获得下载服务授权');
