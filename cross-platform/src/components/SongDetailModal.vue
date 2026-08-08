@@ -23,7 +23,6 @@ const coverUrl = computed(() => {
   const remote = typeof detail.value.coverUrl === 'string' ? detail.value.coverUrl : '';
   return remote || props.song?.coverUrl || props.song?.coverDeUrl || '';
 });
-const lyricAvailable = computed(() => Boolean(detail.value.lyricUrl || props.song?.lyricUrl));
 
 async function refreshDetail(song: Song) {
   detail.value = {};
@@ -67,8 +66,6 @@ watch(() => props.song, (song) => {
             <div><dt>时长</dt><dd>{{ formatDuration(duration) }}</dd></div>
             <div><dt>专辑 CID</dt><dd>{{ song.albumCid }}</dd></div>
             <div><dt>歌曲 CID</dt><dd>{{ song.cid }}</dd></div>
-            <div><dt>歌词</dt><dd>{{ lyricAvailable ? '官网提供' : '暂无' }}</dd></div>
-            <div><dt>下载格式</dt><dd>官网原始音频</dd></div>
           </dl>
           <p v-if="errorMessage" class="detail-error" role="status">{{ errorMessage }}</p>
         </div>

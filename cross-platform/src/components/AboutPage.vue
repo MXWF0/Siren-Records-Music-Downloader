@@ -28,7 +28,7 @@ function updateConcurrency(event: Event) {
       <div class="library-display-copy">
         <p class="section-label">LIBRARY VIEW</p>
         <h3 id="about-display-heading">整理与显示</h3>
-        <span>这些选项会立即保存，并应用到后续下载。音频保留官网原始格式，不进行虚假的“无损升级”。</span>
+        <span>这些选项会立即保存，并应用到后续下载。</span>
       </div>
       <div class="library-display-options">
         <ToggleSwitch :model-value="props.settings.separateDirectory" label="按专辑文件夹保存音乐" description="桌面版下载时按专辑归档。" class="display-toggle" @update:model-value="emit('updateSettings', { separateDirectory: $event })" />
