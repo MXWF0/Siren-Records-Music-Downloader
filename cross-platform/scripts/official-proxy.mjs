@@ -65,7 +65,8 @@ export function corsHeaders(request) {
   const allowOrigin = origin && isOriginAllowed(request) ? origin : '';
   return {
     ...(allowOrigin ? { 'Access-Control-Allow-Origin': allowOrigin } : {}),
-    'Access-Control-Allow-Headers': 'Content-Type',
+    // Range is sent by the Web worker when resuming a partially written file.
+    'Access-Control-Allow-Headers': 'Content-Type, Range',
     'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
     'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Disposition, Content-Length, Content-Range, Content-Type, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset',
     'Cross-Origin-Resource-Policy': 'cross-origin',

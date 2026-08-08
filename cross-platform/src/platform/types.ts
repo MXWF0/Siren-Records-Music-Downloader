@@ -18,6 +18,8 @@ export interface DownloadRequest {
   downloadDirectory: string;
   separateDirectory: boolean;
   fileName?: string;
+  /** Human-readable song name used by Web download records. */
+  title?: string;
 }
 
 export interface DownloadProgress {
@@ -51,7 +53,7 @@ export interface PersistedQueueState {
 
 export interface DownloadEvents {
   progress(value: DownloadProgress): void;
-  complete(value: { id: string; browserManaged?: boolean }): void;
+  complete(value: { id: string; browserManaged?: boolean; size?: number }): void;
   failed(value: DownloadFailure): void;
   cancelled(value: { id: string }): void;
 }

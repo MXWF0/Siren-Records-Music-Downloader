@@ -1,6 +1,6 @@
 # 塞壬唱片下载器跨平台版
 
-这是与原 Electron 版隔离的 Vue 3 + TypeScript + Tauri 2 项目，当前版本为 <!-- app-version:start -->v1.3<!-- app-version:end -->。它提供音乐库、官网目录、搜索定位、已下载分类、下载队列、歌曲详情和关于页。
+这是与原 Electron 版隔离的 Vue 3 + TypeScript + Tauri 2 项目，当前版本为 <!-- app-version:start -->v1.3.1<!-- app-version:end -->。它提供音乐库、官网目录、搜索定位、已下载分类、下载队列、歌曲详情和关于页。
 
 下载队列支持持久化、1～3 个并发任务、队列暂停、单项取消、失败重试、去重、实时进度、速度和剩余时间。网页端使用浏览器默认下载目录；桌面端使用系统 Downloads 目录。
 

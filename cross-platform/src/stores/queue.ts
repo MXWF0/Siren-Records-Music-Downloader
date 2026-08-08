@@ -56,7 +56,7 @@ function safeFilePart(value: string | undefined, fallback: string) {
   return cleaned || fallback;
 }
 
-/** The proxy may correct the extension when the official source is not WAV. */
+/** The proxy supplies the authoritative extension in Content-Disposition. */
 export function buildSongFileName(song: Pick<Song, 'cid' | 'name' | 'albumName'>) {
   const album = safeFilePart(song.albumName, '塞壬唱片');
   const title = safeFilePart(song.name, song.cid);
@@ -202,7 +202,8 @@ export function createQueueStore(
           id: next.id,
           downloadDirectory: '',
           separateDirectory: settings.separateDirectory,
-          fileName: next.fileName
+          fileName: next.fileName,
+          title: next.title
         });
         if (!result.started) throw new Error('下载任务未能启动');
         startingIds.delete(next.id);
