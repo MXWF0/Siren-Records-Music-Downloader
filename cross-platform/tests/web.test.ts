@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { friendlyDownloadError, normalizeApiBase, resolveApiUrl, resolveDownloadProxy, webPlatform } from '../src/platform/web';
+import {
+  friendlyDownloadError,
+  normalizeApiBase,
+  resolveApiUrl,
+  resolveDownloadProxy,
+  resolveWorkerAssetUrl,
+  webPlatform
+} from '../src/platform/web';
 
 describe('web download errors', () => {
   it('allows the queue to use the configured worker concurrency range', () => {
@@ -45,6 +52,25 @@ describe('web download errors', () => {
     expect(resolveApiUrl('/api/audio?id=42', 'https://proxy.example/')).toBe('https://proxy.example/api/audio?id=42');
     expect(normalizeApiBase('javascript:alert(1)')).toBe('');
     expect(normalizeApiBase('not a URL')).toBe('');
+  });
+
+  it('keeps the repository base path when resolving a hashed Worker asset', () => {
+    const generated = new URL(
+      'https://mxwf0.github.io/Siren-Records-Music-Downloader/web-download.worker-abc123.js'
+    );
+    const resolved = resolveWorkerAssetUrl(
+      generated,
+      'https://mxwf0.github.io/Siren-Records-Music-Downloader/',
+      ['https://mxwf0.github.io/Siren-Records-Music-Downloader/assets/index-def456.js']
+    );
+    expect(resolved.href).toBe(
+      'https://mxwf0.github.io/Siren-Records-Music-Downloader/assets/web-download.worker-abc123.js'
+    );
+  });
+
+  it('does not rewrite development Worker URLs that are not production assets', () => {
+    const generated = new URL('http://localhost:1420/src/web-download.worker.ts');
+    expect(resolveWorkerAssetUrl(generated, 'http://localhost:1420/', [])).toBe(generated);
   });
 
   it('detects the local proxy when a file page has no configured base', async () => {
