@@ -565,7 +565,10 @@ async function runWorkerDownload(
         writeChain = writeChain
           .then(() => writer.write(message.buffer))
           .then(() => emitProgress(request.id, lastLoaded, lastTotal, startedAt))
-          .catch((error) => { fail(error); });
+          .catch((error) => {
+            fail(error);
+            throw error;
+          });
         return;
       }
       if (message.type === 'progress') {
