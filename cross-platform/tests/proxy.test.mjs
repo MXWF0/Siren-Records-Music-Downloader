@@ -32,6 +32,7 @@ describe('proxy request policy', () => {
     expect(isOriginAllowed(request('https://mxwf0.github.io'))).toBe(true);
     expect(isOriginAllowed(request('https://api.example'))).toBe(true);
     expect(corsHeaders(request('https://mxwf0.github.io'))['Access-Control-Allow-Origin']).toBe('https://mxwf0.github.io');
+    expect(corsHeaders(request('https://mxwf0.github.io'))['Access-Control-Allow-Headers']).toContain('Range');
   });
 
   it('rejects unrelated websites and null origins by default', () => {

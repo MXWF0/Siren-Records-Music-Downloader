@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { friendlyDownloadError, normalizeApiBase, resolveApiUrl, resolveDownloadProxy, webPlatform } from '../src/platform/web';
 
 describe('web download errors', () => {
-  it('always uses the serial browser download manager', () => {
-    expect(webPlatform.maxConcurrentDownloads).toBe(1);
+  it('allows the queue to use the configured worker concurrency range', () => {
+    expect(webPlatform.maxConcurrentDownloads).toBe(3);
   });
 
   it('explains rejected origins without exposing backend details', () => {
