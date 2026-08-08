@@ -7,6 +7,16 @@ import type {
   PlatformBridge
 } from './types';
 
+// `?worker&url` asks Vite to bundle the worker as JavaScript and expose its
+// hashed asset URL. A plain `new URL('./worker.ts', import.meta.url)` is
+// transformed into a raw `.ts` asset when the main entry is an IIFE, which
+// browsers cannot execute as a module Worker.
+const bundledWorkerUrl = (import.meta.glob('./web-download.worker.ts', {
+  eager: true,
+  import: 'default',
+  query: '?worker&url'
+}) as Record<string, string>)['./web-download.worker.ts'];
+
 const settingsStorageKey = 'siren-records.settings.v1';
 const queueStorageKey = 'siren-records.queue.v1';
 const downloadedStorageKey = 'siren-records.downloaded.v1';
@@ -454,14 +464,51 @@ function cancelledError() {
   return new DOMException('下载已取消', 'AbortError');
 }
 
-function workerErrorFromEvent(event: ErrorEvent) {
+export function resolveWorkerAssetUrl(
+  generatedUrl: URL,
+  baseUri: string,
+  appScriptUrls: readonly string[] = []
+) {
+  // Vite's IIFE compatibility transform normally uses document.currentScript
+  // as the base. Module/deferred scripts can report it as null, which makes a
+  // GitHub Pages URL resolve at the site root instead of /assets/. Always
+  // prefer the path of the actual application bundle when it is available so
+  // the repository base path is retained even if the generated URL looks like
+  // an otherwise valid /assets URL.
+  const fileName = generatedUrl.pathname.split('/').pop();
+  if (!fileName || !/^web-download\.worker-[\w-]+\.js$/.test(fileName)) return generatedUrl;
+  const appScript = appScriptUrls
+    .find((src) => /(?:^|\/)assets\/index-[^/]+\.js(?:[?#]|$)/.test(src));
+  const rebasedUrl = appScript
+    ? new URL(fileName, appScript)
+    : new URL(`./assets/${fileName}`, baseUri);
+  if (rebasedUrl.href !== generatedUrl.href) {
+    console.warn('[SirenRecords] rebased Worker URL for static hosting', {
+      generated: generatedUrl.href,
+      resolved: rebasedUrl.href
+    });
+  }
+  return rebasedUrl;
+}
+
+function resolveWorkerUrl(generatedUrl: URL) {
+  if (typeof document === 'undefined') return generatedUrl;
+  return resolveWorkerAssetUrl(
+    generatedUrl,
+    document.baseURI,
+    Array.from(document.scripts).map((script) => script.src)
+  );
+}
+
+function workerErrorFromEvent(event: ErrorEvent, workerUrl?: URL) {
   const detail = [
     event.message,
     event.filename && `${event.filename}:${event.lineno || 0}:${event.colno || 0}`
   ].filter(Boolean).join(' · ');
-  const error = normalizeDownloadError(event.error || new Error(detail || 'Worker 加载或运行失败'));
+  const fallback = `Worker 加载或运行失败${workerUrl ? `（${workerUrl.href}）` : ''}`;
+  const error = normalizeDownloadError(event.error || new Error(detail || fallback));
   if (!error.message && detail) error.message = detail;
-  if (!error.message) error.message = 'Worker 加载或运行失败';
+  if (!error.message) error.message = fallback;
   return error;
 }
 
@@ -525,11 +572,19 @@ async function runWorkerDownload(
 ): Promise<number> {
   if (active.controller.signal.aborted) throw cancelledError();
   let worker: Worker;
+  // Vite emits this URL as a hashed ES-module asset. resolveWorkerUrl fixes
+  // the repository base path for GitHub Pages and other static hosts before
+  // constructing the module Worker.
+  const generatedWorkerUrl = new URL(bundledWorkerUrl, document.baseURI);
+  const workerUrl = resolveWorkerUrl(generatedWorkerUrl);
   try {
-    worker = new Worker(new URL('./web-download.worker.ts', import.meta.url), { type: 'module' });
+    worker = new Worker(workerUrl, { type: 'module' });
   } catch (error) {
     // Safari versions without module workers still get a functional download.
-    console.warn('[SirenRecords] module Worker unavailable; using main-thread stream fallback', error);
+    console.warn('[SirenRecords] module Worker unavailable; using main-thread stream fallback', {
+      workerUrl: workerUrl.href,
+      error
+    });
     return runMainThreadFallback(request, endpoint, active, fileHandle);
   }
 
@@ -538,11 +593,12 @@ async function runWorkerDownload(
   // the queue has installed its normal message handlers.
   let bootstrapError: Error | null = null;
   const onBootstrapError = (event: ErrorEvent) => {
-    const error = workerErrorFromEvent(event);
+    const error = workerErrorFromEvent(event, workerUrl);
     bootstrapError = error;
     console.error('[SirenRecords] web download worker bootstrap error', {
       cid: request.id,
       endpoint,
+      workerUrl: workerUrl.href,
       errorType: error.name,
       errorMessage: error.message,
       errorStack: error.stack,
@@ -711,10 +767,11 @@ async function runWorkerDownload(
       if (message.type === 'complete') return finish();
     });
     worker.addEventListener('error', (event) => {
-      const error = workerErrorFromEvent(event);
+      const error = workerErrorFromEvent(event, workerUrl);
       console.error('[SirenRecords] web download worker runtime error', {
         cid: request.id,
         endpoint,
+        workerUrl: workerUrl.href,
         errorType: error.name,
         errorMessage: error.message,
         errorStack: error.stack,
