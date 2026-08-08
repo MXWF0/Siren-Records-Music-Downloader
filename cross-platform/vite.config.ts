@@ -28,6 +28,12 @@ export default defineConfig({
     strictPort: true
   },
   envPrefix: ['VITE_', 'TAURI_'],
+  // The application bundle is kept as an IIFE for the desktop/web entrypoint,
+  // but download workers must be emitted as real ES modules.  A module Worker
+  // cannot reliably execute an IIFE bundle in Safari, Edge, or static hosting.
+  worker: {
+    format: 'es'
+  },
   build: {
     target: ['es2021', 'chrome105', 'safari13'],
     rollupOptions: {

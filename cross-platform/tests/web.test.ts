@@ -12,6 +12,22 @@ describe('web download errors', () => {
     expect(message).toContain('允许来源');
   });
 
+  it('keeps the upstream HTTP status visible for an expired audio signature', () => {
+    expect(friendlyDownloadError(new Error('HTTP 403：下载服务暂时不可用'), false))
+      .toContain('HTTP 403：音频地址失效');
+  });
+
+  it('does not mislabel an origin policy rejection as an expired audio URL', () => {
+    expect(friendlyDownloadError(new Error('HTTP 403：当前网站没有权限使用此下载接口'), false))
+      .toContain('未获得下载服务授权');
+  });
+
+  it('explains browser file-write permission failures', () => {
+    const error = new Error('The request is not allowed');
+    error.name = 'NotAllowedError';
+    expect(friendlyDownloadError(error, false)).toContain('NotAllowedError');
+  });
+
   it('explains how a local static preview gets a download service', () => {
     const message = friendlyDownloadError(new TypeError('Failed to fetch'), true);
     expect(message).toContain('尚未配置下载服务');

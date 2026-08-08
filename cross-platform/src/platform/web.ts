@@ -56,6 +56,10 @@ interface DownloadWorkerResponse {
   contentDisposition: string;
 }
 
+interface DownloadWorkerReady {
+  type: 'ready';
+}
+
 interface DownloadWorkerChunk {
   type: 'chunk';
   requestId: string;
@@ -83,11 +87,13 @@ interface DownloadWorkerTerminal {
   type: 'complete' | 'cancelled' | 'failed';
   requestId: string;
   message?: string;
+  errorName?: string;
+  errorStack?: string;
   loaded?: number;
   total?: number | null;
 }
 
-type DownloadWorkerMessage = DownloadWorkerResponse | DownloadWorkerChunk | DownloadWorkerBlob | DownloadWorkerProgress | DownloadWorkerTerminal;
+type DownloadWorkerMessage = DownloadWorkerReady | DownloadWorkerResponse | DownloadWorkerChunk | DownloadWorkerBlob | DownloadWorkerProgress | DownloadWorkerTerminal;
 
 interface ActiveDownload {
   controller: AbortController;
@@ -324,6 +330,18 @@ function readStoredSettings() {
   return raw ? normalizeSettings(JSON.parse(raw)) : { ...browserDefaults };
 }
 
+function normalizeDownloadError(error: unknown): Error {
+  if (error instanceof Error) return error;
+  if (error && typeof error === 'object') {
+    const value = error as { name?: unknown; message?: unknown; stack?: unknown };
+    const normalized = new Error(typeof value.message === 'string' ? value.message : String(error));
+    if (typeof value.name === 'string' && value.name) normalized.name = value.name;
+    if (typeof value.stack === 'string' && value.stack) normalized.stack = value.stack;
+    return normalized;
+  }
+  return new Error(String(error || '下载失败'));
+}
+
 async function readError(response: Response, fallback: string) {
   try {
     const payload = await response.json() as { error?: unknown };
@@ -335,15 +353,30 @@ async function readError(response: Response, fallback: string) {
 }
 
 const staticDownloadHint = '当前静态页面尚未配置下载服务，请联系维护者配置后端代理地址。';
-const proxyDownloadHint = '下载服务暂时无法连接，请稍后重试；若持续失败，请联系维护者检查 /api/audio 接口。';
 const proxyConfigurationHint = '当前站点没有可用的下载代理，请联系维护者配置 VITE_API_BASE_URL 或同源 /api 服务。';
 
 export function friendlyDownloadError(error: unknown, staticFileMode: boolean) {
-  const message = error instanceof Error ? error.message : String(error || '');
+  const normalized = normalizeDownloadError(error);
+  const message = normalized.message;
+  if (/没有权限|未获.*授权/i.test(message)) return '当前站点未获得下载服务授权，请联系维护者检查允许来源设置。';
+  if (/HTTP\s*403/i.test(message)) return 'HTTP 403：音频地址失效，代理正在刷新官方签名，请稍后重试。';
+  if (/HTTP\s*401/i.test(message)) return 'HTTP 401：下载服务未授权，请稍后重试或联系维护者。';
+  if (/HTTP\s*404/i.test(message)) return staticFileMode ? staticDownloadHint : `HTTP 404：${proxyConfigurationHint}`;
+  if (/NotAllowedError/i.test(normalized.name) || /NotAllowedError|拒绝文件写入权限|用户激活/i.test(message)) {
+    return 'NotAllowedError：浏览器拒绝文件写入权限，请重新点击下载并允许保存。';
+  }
+  if (/QuotaExceededError/i.test(normalized.name) || /QuotaExceededError|磁盘空间不足|配额/i.test(message)) {
+    return 'QuotaExceededError：磁盘空间不足或浏览器存储配额已用尽。';
+  }
+  if (/TypeError/i.test(normalized.name) && /流|stream|readable/i.test(message)) {
+    return `TypeError：流处理错误（${message}）`;
+  }
+  if (/Worker|worker|下载线程/i.test(message)) return `下载线程异常：${message}`;
   if (/请求过于频繁|HTTP 429/i.test(message)) return message || '下载请求过于频繁，请稍后重试';
-  if (/没有权限|未获.*授权|HTTP 403/i.test(message)) return '当前站点未获得下载服务授权，请联系维护者检查允许来源设置。';
-  if (/没有可用的下载代理|HTTP 404|text\/html/i.test(message)) return staticFileMode ? staticDownloadHint : proxyConfigurationHint;
-  if (/Failed to fetch|NetworkError|Load failed|CORS|fetch failed/i.test(message)) return staticFileMode ? staticDownloadHint : proxyDownloadHint;
+  if (/没有可用的下载代理|text\/html/i.test(message)) return staticFileMode ? staticDownloadHint : proxyConfigurationHint;
+  if (/Failed to fetch|NetworkError|Load failed|CORS|fetch failed/i.test(message)) {
+    return staticFileMode ? staticDownloadHint : `NetworkError：网络请求失败（${message}）`;
+  }
   return message || (staticFileMode ? staticDownloadHint : '浏览器下载失败');
 }
 
@@ -421,6 +454,21 @@ function cancelledError() {
   return new DOMException('下载已取消', 'AbortError');
 }
 
+function workerErrorFromEvent(event: ErrorEvent) {
+  const detail = [
+    event.message,
+    event.filename && `${event.filename}:${event.lineno || 0}:${event.colno || 0}`
+  ].filter(Boolean).join(' · ');
+  const error = normalizeDownloadError(event.error || new Error(detail || 'Worker 加载或运行失败'));
+  if (!error.message && detail) error.message = detail;
+  if (!error.message) error.message = 'Worker 加载或运行失败';
+  return error;
+}
+
+function isDownloadWorkerMessage(value: unknown): value is DownloadWorkerMessage {
+  return Boolean(value && typeof value === 'object' && typeof (value as { type?: unknown }).type === 'string');
+}
+
 async function runMainThreadFallback(
   request: DownloadRequest,
   endpoint: string,
@@ -479,16 +527,51 @@ async function runWorkerDownload(
   let worker: Worker;
   try {
     worker = new Worker(new URL('./web-download.worker.ts', import.meta.url), { type: 'module' });
-  } catch {
+  } catch (error) {
     // Safari versions without module workers still get a functional download.
+    console.warn('[SirenRecords] module Worker unavailable; using main-thread stream fallback', error);
     return runMainThreadFallback(request, endpoint, active, fileHandle);
   }
+
+  // Attach listeners before awaiting createWritable(). A module Worker can
+  // fail while its script is loading, and that error must not disappear before
+  // the queue has installed its normal message handlers.
+  let bootstrapError: Error | null = null;
+  const onBootstrapError = (event: ErrorEvent) => {
+    const error = workerErrorFromEvent(event);
+    bootstrapError = error;
+    console.error('[SirenRecords] web download worker bootstrap error', {
+      cid: request.id,
+      endpoint,
+      errorType: error.name,
+      errorMessage: error.message,
+      errorStack: error.stack,
+      time: new Date().toISOString()
+    }, event.error || event);
+  };
+  const onBootstrapMessageError = (event: MessageEvent) => {
+    bootstrapError = new Error('Worker 消息无法结构化克隆');
+    bootstrapError.name = 'DataCloneError';
+    console.error('[SirenRecords] web download worker bootstrap message error', event);
+  };
+  worker.addEventListener('error', onBootstrapError);
+  worker.addEventListener('messageerror', onBootstrapMessageError);
+
   let writer: FileWritableLike | null = null;
   try {
     writer = fileHandle ? await fileHandle.createWritable() : null;
   } catch (error) {
+    worker.removeEventListener('error', onBootstrapError);
+    worker.removeEventListener('messageerror', onBootstrapMessageError);
     worker.terminate();
     throw error;
+  }
+  worker.removeEventListener('error', onBootstrapError);
+  worker.removeEventListener('messageerror', onBootstrapMessageError);
+  if (bootstrapError) {
+    worker.terminate();
+    if (writer?.abort) await writer.abort(bootstrapError).catch(() => undefined);
+    throw bootstrapError;
   }
   if (active.controller.signal.aborted) {
     worker.terminate();
@@ -518,10 +601,11 @@ async function runWorkerDownload(
     };
     const fail = (error: unknown) => {
       if (settled) return;
+      const normalized = normalizeDownloadError(error);
       settled = true;
       cleanup();
-      if (writer?.abort) void writer.abort(error).catch(() => undefined);
-      reject(error instanceof Error ? error : new Error(String(error || '下载失败')));
+      if (writer?.abort) void writer.abort(normalized).catch(() => undefined);
+      reject(normalized);
     };
     const finish = () => {
       if (settled) return;
@@ -533,17 +617,32 @@ async function runWorkerDownload(
         resolve(lastLoaded || fallbackBlob?.size || 0);
       }).catch((error) => {
         cleanup();
-        if (writer?.abort) void writer.abort(error).catch(() => undefined);
-        reject(error instanceof Error ? error : new Error(String(error || '下载失败')));
+        const normalized = normalizeDownloadError(error);
+        if (writer?.abort) void writer.abort(normalized).catch(() => undefined);
+        reject(normalized);
       });
     };
+    const postWorker = (message: DownloadWorkerStart | DownloadWorkerCancel) => {
+      try {
+        worker.postMessage(message);
+        return true;
+      } catch (error) {
+        fail(error);
+        return false;
+      }
+    };
     const cancelWorker = () => {
-      worker.postMessage({ type: 'cancel', requestId } satisfies DownloadWorkerCancel);
+      postWorker({ type: 'cancel', requestId } satisfies DownloadWorkerCancel);
     };
     active.controller.signal.addEventListener('abort', cancelWorker, { once: true });
 
     worker.addEventListener('message', (event: MessageEvent<DownloadWorkerMessage>) => {
+      if (!isDownloadWorkerMessage(event.data)) {
+        fail(new Error('Worker 返回了无法识别的消息'));
+        return;
+      }
       const message = event.data;
+      if (message.type === 'ready') return;
       if (message.requestId !== requestId || settled) return;
       if (message.type === 'response') {
         suggestedName = filenameFromContentDisposition(message.contentDisposition, suggestedName);
@@ -596,7 +695,7 @@ async function runWorkerDownload(
           writeChain = writeChain
             .then(() => writer.seek!(resumeOffset))
             .then(() => {
-              if (!settled) worker.postMessage({
+              if (!settled) postWorker({
                 type: 'start', requestId, endpoint, mode,
                 range: `bytes=${resumeOffset}-`
               } satisfies DownloadWorkerStart);
@@ -604,24 +703,65 @@ async function runWorkerDownload(
             .catch((error) => { fail(error); });
           return;
         }
-        return fail(new Error(message.message || '下载失败'));
+        const failure = new Error(message.message || '下载失败');
+        if (message.errorName) failure.name = message.errorName;
+        if (message.errorStack) failure.stack = message.errorStack;
+        return fail(failure);
       }
       if (message.type === 'complete') return finish();
     });
-    worker.addEventListener('error', (event) => fail(new Error(event.message || '下载线程异常')));
-    worker.postMessage({ type: 'start', requestId, endpoint, mode } satisfies DownloadWorkerStart);
+    worker.addEventListener('error', (event) => {
+      const error = workerErrorFromEvent(event);
+      console.error('[SirenRecords] web download worker runtime error', {
+        cid: request.id,
+        endpoint,
+        errorType: error.name,
+        errorMessage: error.message,
+        errorStack: error.stack,
+        time: new Date().toISOString()
+      }, event.error || event);
+      fail(error);
+    });
+    worker.addEventListener('messageerror', (event) => {
+      const error = new Error('Worker 消息无法结构化克隆');
+      error.name = 'DataCloneError';
+      console.error('[SirenRecords] web download worker message error', {
+        cid: request.id,
+        endpoint,
+        errorType: error.name,
+        errorMessage: error.message,
+        time: new Date().toISOString()
+      }, event);
+      fail(error);
+    });
+    postWorker({ type: 'start', requestId, endpoint, mode } satisfies DownloadWorkerStart);
   });
+}
+
+function logDownloadFailure(request: DownloadRequest, endpoint: string, error: unknown) {
+  const normalized = normalizeDownloadError(error);
+  console.error('[SirenRecords] web download failed', {
+    cid: request.id,
+    title: request.title || request.id,
+    endpoint,
+    browser: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+    errorType: normalized.name,
+    errorMessage: normalized.message,
+    errorStack: normalized.stack,
+    time: new Date().toISOString()
+  }, error);
 }
 
 async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
   let staticFileMode = false;
+  let endpoint = '';
   try {
     const fileHandle = await active.fileHandlePromise;
     if (active.controller.signal.aborted) throw cancelledError();
     const apiBase = await resolveDownloadProxy();
     staticFileMode = typeof location !== 'undefined' && location.protocol === 'file:' && !apiBase;
     if (staticFileMode) throw new Error(staticDownloadHint);
-    const endpoint = apiBase
+    endpoint = apiBase
       ? resolveApiUrl(`/api/audio?id=${encodeURIComponent(request.id)}`, apiBase)
       : `/api/audio?id=${encodeURIComponent(request.id)}`;
     const size = await runWorkerDownload(request, endpoint, active, fileHandle);
@@ -635,6 +775,7 @@ async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
     });
     emit('complete', { id: request.id, browserManaged: !fileHandle, size });
   } catch (error) {
+    logDownloadFailure(request, endpoint, error);
     const userCancelled = error instanceof DOMException && error.name === 'AbortError';
     if (active.controller.signal.aborted || userCancelled) {
       await saveDownloadRecord({
