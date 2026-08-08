@@ -5,7 +5,15 @@ import { readFileSync } from 'node:fs';
 const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    {
+      name: 'inject-app-version',
+      transformIndexHtml(html) {
+        return html.replaceAll('%APP_VERSION%', packageJson.version);
+      }
+    },
+    vue()
+  ],
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version)
   },
