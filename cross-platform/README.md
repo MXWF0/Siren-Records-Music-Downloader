@@ -1,10 +1,24 @@
 # 塞壬唱片下载器跨平台版
 
-这是与原 Electron 版完全隔离的新项目，当前版本为 v1.1。它使用 Vue 3、TypeScript 和 Tauri 2，提供音乐库、官网目录、搜索定位、已下载分类、下载队列、歌曲详情和关于页。
+这是与原 Electron 版隔离的 Vue 3 + TypeScript + Tauri 2 项目，当前版本为 <!-- app-version:start -->v1.3<!-- app-version:end -->。它提供音乐库、官网目录、搜索定位、已下载分类、下载队列、歌曲详情和关于页。
 
-下载队列支持待下载、下载中、失败、完成、单项取消、失败重试、队列去重、实时进度、速度和剩余时间。音乐库底部固定显示当前下载状态，整理与显示选项放在关于页。网页端使用浏览器默认下载目录；桌面端自动使用系统 Downloads 目录，不再显示无效的目录和音频格式设置。
+下载队列支持持久化、1～3 个并发任务、队列暂停、单项取消、失败重试、去重、实时进度、速度和剩余时间。网页端使用浏览器默认下载目录；桌面端使用系统 Downloads 目录。
 
-桌面端固定输出标准 WAV。官网的 MP3、WAV、FLAC 源由内置 Rust 音频解码器转换，不依赖系统 FFmpeg，因此 Windows、macOS 和 Linux 使用同一套下载逻辑。歌词会作为同名 `.lrc` 文件保存，异常下载会清理临时文件并支持恢复。
+Web 和桌面端均保留官网提供的原始音频格式。项目不会把 MP3、AAC 等有损音频转换成 WAV 后宣传为无损；这种转换只会增大文件，无法恢复已经丢失的音频信息。桌面端会保存下载 manifest，并在启动时检查真实文件是否仍然存在。
+
+## 架构
+
+```mermaid
+flowchart TD
+  UI["Vue 3 + TypeScript"] --> PLATFORM{"平台桥接层"}
+  PLATFORM --> WEB["Web 浏览器"]
+  PLATFORM --> TAURI["Tauri 2"]
+  WEB --> PROXY["Node / Serverless 实时代理"]
+  TAURI --> RUST["Rust 下载模块"]
+  PROXY --> API["塞壬唱片 API"]
+  RUST --> API
+  RUST --> FILES["本地文件 + 下载 manifest"]
+```
 
 ## 环境要求
 
@@ -12,71 +26,128 @@
 - Rust stable 工具链
 - 对应平台的 Tauri 系统依赖
 
-Windows 需要 Microsoft C++ Build Tools 和 WebView2；macOS 需要 Xcode Command Line Tools；Linux 需要 WebKitGTK 等发行版依赖。
+Windows 需要 Microsoft C++ Build Tools 和 WebView2；macOS 需要 Xcode Command Line Tools；Linux 需要 WebKitGTK 4.1 等发行版依赖。
 
-## 桌面端运行与构建
+## 本地开发与检查
 
 ```powershell
-npm install
+npm ci
+npm run check
+npm run build
 npm run tauri dev
 ```
 
-Windows 构建：
+`npm run check` 会运行前端测试、TypeScript 检查和 Node 代理脚本语法检查。Rust 后端使用：
 
 ```powershell
-npm run bundle:windows
+cd src-tauri
+cargo check --locked
 ```
 
-macOS 和 Linux 应在对应系统上构建，也可以使用 `.github/workflows/desktop-bundles.yml` 通过 GitHub Actions 生成对应分发包。正式发布时请分发 Tauri 生成的安装包或应用文件，不要直接分发 `index.html`。
+## 版本管理
 
-## 浏览器预览
+`package.json` 是跨平台版唯一的人工维护版本来源。运行 `npm run version:sync` 会同步 Tauri、Cargo 和 README；应用界面由 Vite 构建时直接读取该版本。`npm run version:check` 和 Release 工作流会阻止版本文件或 Git 标签不一致的构建。跨平台版使用 `v1.x`，旧 Electron 版继续使用 `v5.x`。
+
+## Web 下载架构
+
+前端不会使用目录快照中的 `sourceUrl` 下载音频。每次下载都请求：
+
+```text
+GET /api/audio?id=歌曲CID
+```
+
+后端代理会实时请求塞壬唱片歌曲接口，取得当前有效的官网音频地址，再以流式方式转发。这样不会把短时效 CDN 签名写入静态构建产物。
+
+支持文件系统写入 API 的 Chromium 浏览器会把响应分块直接写入用户选择的文件，不构造完整 Blob。Android Chrome、iOS Safari 等不支持该 API 的浏览器会把音频地址交给系统下载管理器流式保存，并自动限制为串行启动，避免移动浏览器拦截多个下载。移动浏览器无法向网页反馈系统下载管理器的最终结果，因此网页中的“已下载”明确表示本设备的下载操作记录。
+
+代理包含以下基础保护：
+
+- 仅允许配置的浏览器来源或同源页面调用；
+- 按客户端地址限制目录和音频请求频率；
+- 校验歌曲 CID、上游 HTTPS 地址和允许的音频域名；
+- 限制单个音频响应大小，并在用户取消时中断上游请求。
+
+本地完整 Web 模式：
 
 ```powershell
 npm run web
 ```
 
-终端会显示 `http://127.0.0.1:4173`。本地网页服务会将官网目录和音频请求转为同源请求，并在每次下载时刷新官网音频地址；浏览器下载位置由浏览器自身设置决定。直接双击 `dist/index.html` 时，页面会自动探测 `127.0.0.1:4173`；如果本地代理未运行，只能浏览内置目录快照，下载会提示需要代理，而不会跳转到 CDN 错误页。
+访问 `http://127.0.0.1:4173`。此模式由同一个 Node 服务提供页面、目录代理和音频代理。
 
-## 长期网页部署
+## 部署方式
 
-官网音频 URL 带有短时效签名，浏览器不能直接调用官网接口刷新它。项目内置了可部署的 Serverless 代理，`api/catalog.mjs` 和 `api/audio/[id].mjs` 可直接部署到 Vercel：
+### Vercel 或兼容 Serverless 平台
 
-仓库根目录现已提供 `.github/workflows/cross-platform-web-pages.yml`。推送到 GitHub 后，在仓库 Settings → Pages 中将 Source 设为 GitHub Actions，工作流会立即发布网页，并每四小时刷新全部官网音频签名。默认网址为：
+将 `cross-platform` 设为项目根目录后部署，不要只上传 `dist`。Vercel 会同时发布静态页面与 `api/catalog.mjs`、`api/audio.mjs`，前端默认使用同源 `/api`，不需要设置 `VITE_API_BASE_URL`。
+
+部署后检查：
 
 ```text
-https://mxwf0.github.io/Siren-Records-Music-Downloader/
+https://你的域名/api/catalog
+https://你的域名/api/audio?id=779442
 ```
 
-该网页可以直接分享给其他电脑使用，不需要对方运行代理。定时构建只有在全部歌曲签名刷新成功时才会部署，避免用失败构建覆盖仍可使用的站点。
+第一个地址应返回目录 JSON，第二个地址应开始返回音频。
 
-```powershell
-npm install
-npm run build
-npx vercel deploy --prod
+### GitHub Pages
+
+GitHub Pages 只能托管静态文件，不能运行 `/api`。必须先将 `cross-platform` 部署到 Vercel、Render、Railway 或其他可运行 Node/Serverless 的平台，再在 GitHub 仓库中添加 Actions 变量：
+
+```text
+SIREN_API_BASE_URL=https://你的代理域名
 ```
 
-Vercel 部署时必须选择 `cross-platform` 项目根目录，不能只上传 `dist` 文件夹；这样 Vercel 才会同时托管 `dist` 静态页面和 `/api` 函数。打开部署后的站点即可长期使用，不需要用户运行 Node 程序。若静态页面部署在其他平台，在构建时设置 `VITE_API_BASE_URL` 为代理站点根地址（例如 `https://your-siren-proxy.example`），页面会通过该地址获取实时目录和音频；也可以直接在生成的 `dist/index.html` 内修改 `window.__SIREN_API_BASE__`，无需重新构建。示例见 `.env.example`。仅分发一个没有代理地址的 `index.html` 无法绕过官网 CORS 和签名机制，因此只能作为离线目录预览。
+根目录 `.github/workflows/cross-platform-web-pages.yml` 会将该变量作为 `VITE_API_BASE_URL` 构建网页。没有配置 HTTPS 代理地址时，工作流会停止发布，避免生成无法下载的站点。
 
-音频函数使用流式转发，不把整首音频读入代理内存；浏览器端仍会显示下载进度、速度和官网生成的文件名。
+### 其他静态托管
 
-部署完成后应先打开 `https://你的域名/api/catalog`。如果返回包含 `albums` 和 `songs` 的 JSON，说明官网代理正常；再打开 `https://你的域名/api/audio?id=779442`，浏览器应开始下载音频。如果这两个地址返回网页正文或 404，说明部署时只上传了 `dist`，需要重新从 `cross-platform` 根目录部署。
+构建时设置：
 
-也可以在支持 Docker 的服务器上部署完整网页服务：
+```text
+VITE_API_BASE_URL=https://你的代理域名
+```
+
+也可以在构建后编辑 `dist/runtime-config.js`：
+
+```javascript
+window.__SIREN_API_BASE__ = 'https://你的代理域名';
+```
+
+单独打开或上传一个未配置代理的 `index.html` 只能浏览目录，无法绕过官网 CORS，也无法刷新音频签名。
+
+### Docker、Render 或 Railway
+
+Docker：
 
 ```powershell
 docker build -t siren-records-web .
 docker run -d --name siren-records-web -p 4173:4173 siren-records-web
 ```
 
-其他电脑访问服务器的 `http://服务器地址:4173` 即可使用。不能把单独的 `index.html` 当作完整下载程序分发；纯静态文件没有能力刷新官网签名。
+Node 托管平台的构建命令设为 `npm ci && npm run build`，启动命令设为 `npm start`。服务会读取平台提供的 `PORT` 并监听 `0.0.0.0`。
 
-在 Render、Railway 等 Node 托管平台上，将构建命令设为 `npm ci && npm run build`，启动命令设为 `npm start`。服务会自动读取平台提供的 `PORT` 并监听 `0.0.0.0`，部署完成后直接分享站点网址即可。
+## 代理安全配置
 
-## 检查
+生产环境建议配置：
 
-```powershell
-npm test
-npm run build
+```text
+SIREN_ALLOWED_ORIGINS=https://你的网页域名
+SIREN_AUDIO_RATE_LIMIT=8
+SIREN_CATALOG_RATE_LIMIT=60
+SIREN_RATE_LIMIT_WINDOW_MS=60000
+SIREN_MAX_AUDIO_BYTES=1073741824
+SIREN_AUDIO_HOSTS=hycdn.cn
 ```
 
-原版 Electron 目录不在本项目构建范围内，所有跨平台代码和产物都位于 `cross-platform` 文件夹。
+多个允许来源使用英文逗号分隔。默认允许项目 GitHub Pages 地址和本地开发地址；同源部署会自动放行。`file://` 的 `Origin: null` 默认拒绝，如确需支持可显式设置 `SIREN_ALLOW_NULL_ORIGIN=1`。
+
+## GitHub Actions
+
+所有工作流位于仓库根目录 `.github/workflows/`：
+
+- `ci.yml`：前端测试、TypeScript、生产构建及 Rust `cargo check --locked`；
+- `cross-platform-web-pages.yml`：构建并发布配置了实时代理的 GitHub Pages；
+- `desktop-bundles.yml`：生成 Windows x64、macOS Universal 和 Linux x64 安装包。
+
+原版 Electron 目录不在本项目构建范围内，跨平台代码和产物都位于 `cross-platform` 文件夹。

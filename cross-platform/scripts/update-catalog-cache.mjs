@@ -1,10 +1,8 @@
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
 const cacheFile = new URL('../src/catalog-cache.json', import.meta.url);
 const apiRoot = 'https://monster-siren.hypergryph.com/api';
 const timeoutMs = 20_000;
-const refreshSignedUrls = process.env.SIREN_REFRESH_SIGNED_URLS === '1';
-const requireFreshCatalog = process.env.SIREN_REQUIRE_FRESH_CATALOG === '1';
 
 const previewCache = {
   albums: {
@@ -28,70 +26,49 @@ const previewCache = {
 
 async function fetchOfficial(path) {
   const response = await fetch(`${apiRoot}${path}`, {
-    headers: { Accept: 'application/json', 'User-Agent': 'Siren-Records-Web-Build/1.0' },
+    headers: { Accept: 'application/json', 'User-Agent': 'Siren-Records-Web-Build' },
     signal: AbortSignal.timeout(timeoutMs)
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
-async function hasUsableCache() {
+function isUsableCache(value) {
+  return Array.isArray(value?.albums?.data)
+    && Array.isArray(value?.songs?.data?.list)
+    && value.songs.data.list.length > 0;
+}
+
+async function readExistingCache() {
   try {
     const value = JSON.parse(await readFile(cacheFile, 'utf8'));
-    return Array.isArray(value?.albums?.data) && Array.isArray(value?.songs?.data?.list) && value.songs.data.list.length > 0;
+    return isUsableCache(value) ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function readCachedDetails() {
-  try {
-    const value = JSON.parse(await readFile(cacheFile, 'utf8'));
-    return value?.details && typeof value.details === 'object' ? value.details : {};
-  } catch {
-    return {};
-  }
-}
-
-async function hydrateSongDetails(songs, cachedDetails) {
-  const rows = Array.isArray(songs?.data?.list) ? songs.data.list : [];
-  const details = { ...cachedDetails };
-  const detailIds = rows
-    .map((song) => String(song?.cid || ''))
-    .filter((id) => id && (refreshSignedUrls || !details[id]?.data?.sourceUrl));
-  let cursor = 0;
-  let failed = 0;
-  const workerCount = Math.min(12, detailIds.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (cursor < detailIds.length) {
-      const id = detailIds[cursor++];
-      try {
-        details[id] = await fetchOfficial(`/song/${encodeURIComponent(id)}`);
-      } catch {
-        failed += 1;
-      }
-    }
-  }));
-  if (detailIds.length) {
-    console.log(`歌曲下载信息已更新：${detailIds.length - failed}/${detailIds.length}`);
-  }
-  if (failed) console.warn(`${failed} 首歌曲暂时无法更新下载信息，将在下次构建时重试。`);
-  if (failed && requireFreshCatalog) throw new Error(`${failed} 首歌曲签名刷新失败，已取消静态站点部署`);
-  return details;
+async function writeCatalog(payload) {
+  // Signed sourceUrl values are intentionally excluded. Downloads always ask
+  // the backend proxy for a fresh official song detail at request time.
+  await writeFile(cacheFile, `${JSON.stringify({
+    generatedAt: payload.generatedAt ?? null,
+    albums: payload.albums,
+    songs: payload.songs
+  })}\n`, 'utf8');
 }
 
 try {
   const [albums, songs] = await Promise.all([fetchOfficial('/albums'), fetchOfficial('/songs')]);
-  const details = await hydrateSongDetails(songs, await readCachedDetails());
-  const payload = { generatedAt: new Date().toISOString(), albums, songs, details };
-  await writeFile(cacheFile, `${JSON.stringify(payload)}\n`, 'utf8');
+  await writeCatalog({ generatedAt: new Date().toISOString(), albums, songs });
   console.log(`官网目录快照已更新：${songs?.data?.list?.length ?? 0} 首歌曲`);
 } catch (error) {
-  if (requireFreshCatalog) throw error;
-  if (!(await hasUsableCache())) {
-    await writeFile(cacheFile, `${JSON.stringify({ generatedAt: null, ...previewCache })}\n`, 'utf8');
-    console.warn(`官网目录暂时不可用，已写入内置预览目录：${error instanceof Error ? error.message : error}`);
+  const existing = await readExistingCache();
+  if (existing) {
+    await writeCatalog(existing);
+    console.warn(`官网目录暂时不可用，保留不含音频签名的目录快照：${error instanceof Error ? error.message : error}`);
   } else {
-    console.warn(`官网目录暂时不可用，保留已有快照：${error instanceof Error ? error.message : error}`);
+    await writeCatalog({ generatedAt: null, ...previewCache });
+    console.warn(`官网目录暂时不可用，已写入内置预览目录：${error instanceof Error ? error.message : error}`);
   }
 }

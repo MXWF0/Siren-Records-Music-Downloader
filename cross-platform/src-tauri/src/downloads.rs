@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
@@ -19,6 +19,7 @@ const CANCELLED: &str = "__SIREN_DOWNLOAD_CANCELLED__";
 #[derive(Clone, Default)]
 pub struct DownloadManager {
     active: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    manifest: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -26,14 +27,7 @@ pub struct DownloadManager {
 pub struct DownloadRequest {
     pub id: String,
     pub download_directory: String,
-    pub output_format: OutputFormat,
     pub separate_directory: bool,
-}
-
-#[derive(Clone, Deserialize)]
-pub enum OutputFormat {
-    #[serde(rename = "wav")]
-    Wav,
 }
 
 #[derive(Clone, Serialize)]
@@ -66,6 +60,20 @@ struct DownloadedAudio {
     content_type: Option<String>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadRecord {
+    cid: String,
+    file_path: String,
+    file_size: u64,
+    completed_at: u64,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct DownloadManifest {
+    records: Vec<DownloadRecord>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartResult {
@@ -92,6 +100,20 @@ pub async fn fetch_catalog() -> Result<CatalogResponse, String> {
     Ok(CatalogResponse { albums, songs })
 }
 
+#[tauri::command]
+pub async fn fetch_song_detail(id: String) -> Result<Value, String> {
+    if !valid_song_id(&id) {
+        return Err("歌曲编号无效".into());
+    }
+    let client = build_http_client()?;
+    let mut payload = fetch_catalog_json(&client, &format!("{API_ROOT}/song/{id}")).await?;
+    let data = payload.get_mut("data").ok_or("歌曲详情为空")?;
+    if let Some(object) = data.as_object_mut() {
+        object.remove("sourceUrl");
+    }
+    Ok(data.clone())
+}
+
 async fn fetch_catalog_json(client: &reqwest::Client, url: &str) -> Result<Value, String> {
     let response = client
         .get(url)
@@ -114,8 +136,8 @@ pub async fn start_download(
     mut request: DownloadRequest,
 ) -> Result<StartResult, String> {
     let id = request.id.trim().to_owned();
-    if id.is_empty() {
-        return Err("歌曲编号不能为空".into());
+    if !valid_song_id(&id) {
+        return Err("歌曲编号无效".into());
     }
     if request.download_directory.trim().is_empty() {
         request.download_directory = resolve_download_directory(&app, "")?;
@@ -137,8 +159,16 @@ pub async fn start_download(
         let result = perform_download(&app_handle, &request, &token).await;
         manager.active.lock().await.remove(&id);
         match result {
-            Ok(()) => {
-                let _ = app_handle.emit("download-complete", DownloadComplete { id });
+            Ok(record) => {
+                let _guard = manager.manifest.lock().await;
+                match write_download_record(&app_handle, record).await {
+                    Ok(()) => {
+                        let _ = app_handle.emit("download-complete", DownloadComplete { id });
+                    }
+                    Err(message) => {
+                        let _ = app_handle.emit("download-failed", DownloadFailure { id, message });
+                    }
+                }
             }
             Err(error) if token.is_cancelled() || error == CANCELLED => {
                 let _ = app_handle.emit("download-cancelled", DownloadCancelled { id });
@@ -180,6 +210,96 @@ pub async fn recover_downloads(app: AppHandle, download_directory: String) -> Re
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("无法检查临时文件：{error}")),
     }
+}
+
+/// Verify the desktop manifest against real files on every startup. Missing
+/// files are removed so the UI returns those songs to the not-downloaded list.
+#[tauri::command]
+pub async fn verify_download_manifest(
+    app: AppHandle,
+    state: State<'_, DownloadManager>,
+) -> Result<Vec<String>, String> {
+    let _guard = state.manifest.lock().await;
+    let mut manifest = read_download_manifest(&app).await?;
+    let original_len = manifest.records.len();
+    let mut valid = Vec::with_capacity(original_len);
+    for record in manifest.records {
+        if fs::metadata(&record.file_path)
+            .await
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        {
+            valid.push(record);
+        }
+    }
+    manifest.records = valid;
+    if manifest.records.len() != original_len {
+        write_download_manifest(&app, &manifest).await?;
+    }
+    Ok(manifest
+        .records
+        .iter()
+        .map(|record| record.cid.clone())
+        .collect())
+}
+
+fn manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("downloads-manifest.json"))
+        .map_err(|error| format!("无法定位下载记录目录：{error}"))
+}
+
+async fn read_download_manifest(app: &AppHandle) -> Result<DownloadManifest, String> {
+    let path = manifest_path(app)?;
+    match fs::read(&path).await {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(manifest) => Ok(manifest),
+            Err(error) => {
+                let backup = path.with_extension("json.corrupt");
+                let _ = fs::remove_file(&backup).await;
+                fs::rename(&path, &backup).await.map_err(|move_error| {
+                    format!("下载记录损坏且无法备份：{error}；{move_error}")
+                })?;
+                Ok(DownloadManifest::default())
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(DownloadManifest::default())
+        }
+        Err(error) => Err(format!("无法读取下载记录：{error}")),
+    }
+}
+
+async fn write_download_manifest(
+    app: &AppHandle,
+    manifest: &DownloadManifest,
+) -> Result<(), String> {
+    let path = manifest_path(app)?;
+    let parent = path.parent().ok_or("下载记录目录无效")?;
+    fs::create_dir_all(parent)
+        .await
+        .map_err(|error| format!("无法创建下载记录目录：{error}"))?;
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| format!("无法生成下载记录：{error}"))?;
+    fs::write(&temporary, bytes)
+        .await
+        .map_err(|error| format!("无法写入下载记录：{error}"))?;
+    if fs::metadata(&path).await.is_ok() {
+        fs::remove_file(&path)
+            .await
+            .map_err(|error| format!("无法更新下载记录：{error}"))?;
+    }
+    fs::rename(&temporary, &path)
+        .await
+        .map_err(|error| format!("无法保存下载记录：{error}"))
+}
+
+async fn write_download_record(app: &AppHandle, record: DownloadRecord) -> Result<(), String> {
+    let mut manifest = read_download_manifest(app).await?;
+    manifest.records.retain(|item| item.cid != record.cid);
+    manifest.records.push(record);
+    write_download_manifest(app, &manifest).await
 }
 
 /// 创建并删除一个仅用于校验的临时文件，以便在真正下载前反馈权限问题。
@@ -225,7 +345,7 @@ async fn perform_download(
     app: &AppHandle,
     request: &DownloadRequest,
     token: &CancellationToken,
-) -> Result<(), String> {
+) -> Result<DownloadRecord, String> {
     let output_root = PathBuf::from(request.download_directory.trim());
     fs::create_dir_all(&output_root)
         .await
@@ -254,7 +374,7 @@ async fn perform_download_inner(
     token: &CancellationToken,
     output_root: &Path,
     job_directory: &Path,
-) -> Result<(), String> {
+) -> Result<DownloadRecord, String> {
     let client = build_http_client()?;
 
     let song_payload =
@@ -344,114 +464,37 @@ async fn perform_download_inner(
         Some(url) => download_optional_text(&client, url, token).await?,
         None => None,
     };
-    let copy_source_wav = matches!(&request.output_format, OutputFormat::Wav)
-        && is_wav_source(downloaded_audio.content_type.as_deref(), &source_url);
-    if copy_source_wav {
-        fs::rename(&temporary_audio, final_base.with_extension("wav"))
+    // Preserve the official source format. Decoding a lossy source into WAV
+    // increases file size but cannot restore information lost by compression.
+    let extension = audio_extension(downloaded_audio.content_type.as_deref(), &source_url);
+    let final_audio = final_base.with_extension(extension);
+    if fs::metadata(&final_audio).await.is_ok() {
+        fs::remove_file(&final_audio)
             .await
-            .map_err(|error| format!("无法保存 WAV 文件：{error}"))?;
-    } else {
-        convert_to_wav(&temporary_audio, &final_base.with_extension("wav"), token).await?;
+            .map_err(|error| format!("无法覆盖已有音频文件：{error}"))?;
     }
+    fs::rename(&temporary_audio, &final_audio)
+        .await
+        .map_err(|error| format!("无法保存 WAV 文件：{error}"))?;
     if let Some(lyrics) = lyrics {
         fs::write(final_base.with_extension("lrc"), lyrics)
             .await
             .map_err(|error| format!("无法写入歌词文件：{error}"))?;
     }
-    Ok(())
-}
-
-/// Decode the official MP3/WAV/FLAC source into a standard PCM WAV without
-/// relying on a platform-installed executable. This keeps the fixed WAV mode
-/// usable on macOS and Linux as well as Windows.
-async fn convert_to_wav(
-    input: &Path,
-    output: &Path,
-    token: &CancellationToken,
-) -> Result<(), String> {
-    if token.is_cancelled() {
-        return Err(CANCELLED.into());
-    }
-    let input = input.to_owned();
-    let output = output.to_owned();
-    tokio::select! {
-        _ = token.cancelled() => Err(CANCELLED.into()),
-        result = tokio::task::spawn_blocking(move || decode_to_wav(&input, &output)) => {
-            result.map_err(|error| format!("WAV 转换任务异常：{error}"))?
-        }
-    }
-}
-
-fn decode_to_wav(input: &Path, output: &Path) -> Result<(), String> {
-    use hound::{SampleFormat, WavSpec, WavWriter};
-    use symphonia::core::{
-        audio::SampleBuffer, codecs::DecoderOptions, errors::Error as SymphoniaError,
-        formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
-    };
-
-    let file = std::fs::File::open(input).map_err(|error| format!("无法读取临时音频：{error}"))?;
-    let media_source = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(extension) = input.extension().and_then(|value| value.to_str()) {
-        hint.with_extension(extension);
-    }
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            media_source,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|error| format!("无法识别音频格式：{error}"))?;
-    let mut format = probed.format;
-    let track = format.default_track().ok_or("音频没有可用声道")?;
-    let track_id = track.id;
-    let codec_params = track.codec_params.clone();
-    let channels = codec_params.channels.ok_or("音频缺少声道信息")?.count();
-    let sample_rate = codec_params.sample_rate.ok_or("音频缺少采样率信息")?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
-        .map_err(|error| format!("无法解码音频：{error}"))?;
-    let mut writer = WavWriter::create(
-        output,
-        WavSpec {
-            channels: channels as u16,
-            sample_rate,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
-        },
-    )
-    .map_err(|error| format!("无法创建 WAV 文件：{error}"))?;
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::ResetRequired) => continue,
-            Err(SymphoniaError::IoError(error))
-                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break
-            }
-            Err(SymphoniaError::IoError(error)) => return Err(format!("读取音频失败：{error}")),
-            Err(error) => return Err(format!("读取音频数据失败：{error}")),
-        };
-        if packet.track_id() != track_id {
-            continue;
-        }
-        let decoded = decoder
-            .decode(&packet)
-            .map_err(|error| format!("音频解码失败：{error}"))?;
-        let mut samples = SampleBuffer::<i16>::new(decoded.capacity() as u64, *decoded.spec());
-        samples.copy_interleaved_ref(decoded);
-        for sample in samples.samples() {
-            writer
-                .write_sample(*sample)
-                .map_err(|error| format!("写入 WAV 数据失败：{error}"))?;
-        }
-    }
-    writer
-        .finalize()
-        .map_err(|error| format!("无法完成 WAV 文件：{error}"))
+    let file_size = fs::metadata(&final_audio)
+        .await
+        .map_err(|error| format!("无法读取已下载文件信息：{error}"))?
+        .len();
+    let completed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    Ok(DownloadRecord {
+        cid: request.id.clone(),
+        file_path: final_audio.to_string_lossy().into_owned(),
+        file_size,
+        completed_at,
+    })
 }
 
 fn should_refresh_audio_url(error: &str) -> bool {
@@ -538,13 +581,31 @@ async fn download_audio(
     Ok(DownloadedAudio { content_type })
 }
 
-fn is_wav_source(content_type: Option<&str>, source_url: &str) -> bool {
-    content_type.is_some_and(|value| value.to_ascii_lowercase().contains("wav"))
-        || source_url
-            .to_ascii_lowercase()
-            .split(['?', '#'])
-            .next()
-            .is_some_and(|value| value.ends_with(".wav"))
+fn audio_extension(content_type: Option<&str>, source_url: &str) -> &'static str {
+    let content_type = content_type.unwrap_or_default().to_ascii_lowercase();
+    if content_type.contains("flac") {
+        return "flac";
+    }
+    if content_type.contains("mpeg") || content_type.contains("mp3") {
+        return "mp3";
+    }
+    if content_type.contains("ogg") {
+        return "ogg";
+    }
+    if content_type.contains("aac") {
+        return "aac";
+    }
+    if content_type.contains("mp4") || content_type.contains("m4a") {
+        return "m4a";
+    }
+    let lower_url = source_url.to_ascii_lowercase();
+    let path = lower_url.split(['?', '#']).next().unwrap_or_default();
+    for extension in ["wav", "flac", "mp3", "ogg", "aac", "m4a"] {
+        if path.ends_with(&format!(".{extension}")) {
+            return extension;
+        }
+    }
+    "wav"
 }
 
 async fn download_optional_text(
@@ -568,7 +629,10 @@ async fn download_optional_text(
 fn build_http_client() -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .user_agent("Siren-Records-Cross-Platform/1.0");
+        .user_agent(format!(
+            "Siren-Records-Cross-Platform/{}",
+            env!("CARGO_PKG_VERSION")
+        ));
     if let Some(proxy_url) = configured_proxy_url() {
         let proxy = reqwest::Proxy::all(&proxy_url)
             .map_err(|error| format!("系统代理地址无效：{error}"))?;
@@ -641,6 +705,14 @@ fn value_to_string(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
+fn valid_song_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 fn safe_component(value: &str, fallback: &str) -> String {
     let mut result: String = value
         .chars()
@@ -663,5 +735,36 @@ fn safe_component(value: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         result.chars().take(150).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{audio_extension, safe_component, valid_song_id};
+
+    #[test]
+    fn preserves_the_official_audio_extension() {
+        assert_eq!(
+            audio_extension(Some("audio/flac"), "https://example.test/a.wav"),
+            "flac"
+        );
+        assert_eq!(
+            audio_extension(
+                Some("application/octet-stream"),
+                "https://example.test/a.mp3?sign=1"
+            ),
+            "mp3"
+        );
+    }
+
+    #[test]
+    fn sanitizes_download_path_components() {
+        assert_eq!(safe_component("Album:/Track", "fallback"), "Album Track");
+    }
+
+    #[test]
+    fn rejects_invalid_song_identifiers() {
+        assert!(valid_song_id("779442"));
+        assert!(!valid_song_id("../albums"));
     }
 }

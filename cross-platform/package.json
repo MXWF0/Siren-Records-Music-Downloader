@@ -1,7 +1,7 @@
 {
   "name": "siren-records-cross-platform",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -9,15 +9,22 @@
   "scripts": {
     "start": "node scripts/web-server.mjs",
     "dev": "vite --host 0.0.0.0 --port 1420",
-    "build": "node scripts/update-catalog-cache.mjs && vue-tsc --noEmit && vite build && node scripts/prepare-static-dist.mjs",
+    "build": "npm run version:sync && node scripts/update-catalog-cache.mjs && vue-tsc --noEmit && vite build && node scripts/prepare-static-dist.mjs",
     "web": "npm run build && node scripts/web-server.mjs",
     "web:serve": "node scripts/web-server.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
-    "bundle": "tauri build",
-    "bundle:windows": "tauri build --bundles nsis,msi",
-    "bundle:macos": "tauri build --bundles app,dmg",
-    "bundle:linux": "tauri build --bundles appimage,deb",
+    "bundle": "npm run version:sync && tauri build",
+    "bundle:windows": "npm run version:sync && tauri build --bundles nsis,msi",
+    "bundle:macos": "npm run version:sync && tauri build --bundles app,dmg",
+    "bundle:linux": "npm run version:sync && tauri build --bundles appimage,deb",
     "test": "vitest run",
+    "typecheck": "vue-tsc --noEmit",
+    "check:scripts": "node --check scripts/official-proxy.mjs && node --check scripts/web-server.mjs && node --check scripts/sync-version.mjs && node --check api/catalog.mjs && node --check api/song.mjs && node --check api/audio.mjs && node --check api/audio/[id].mjs",
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:check": "node scripts/sync-version.mjs --check",
+    "check:fast": "npm run version:check && npm test && npm run check:scripts",
+    "check": "npm run check:fast && npm run typecheck",
+    "ci": "npm run check:fast && npm run build",
     "tauri": "tauri"
   },
   "dependencies": {

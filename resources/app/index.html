@@ -1,0 +1,340 @@
+<!--
+ * @Author: chenwenda316
+ * @Date: 2024-08-15 23:28:23
+ * @LastEditTime: 2024-08-19 15:55:17
+ * @FilePath: \my-electron-app\index.html
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https://monster-siren.hypergryph.com; script-src 'self' 'unsafe-inline';img-src https: data:;style-src 'self' 'unsafe-inline'; ">
+    <title>塞壬唱片下载器</title>
+    <link href="./bootstrap.min.css" rel="stylesheet">
+    <style>
+        .dragable {
+            -webkit-app-region: drag;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-app-region: drag;
+        }
+        .group-toggle { min-width: 11rem; text-align: left; }
+        .directory-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .downloaded-row > td:first-child { background: linear-gradient(90deg, #e8f7ec 0%, #f5fbf6 100%) !important; }
+        .search-match > td:first-child { animation: search-highlight 1.8s ease-in-out both; }
+        @keyframes search-highlight {
+            0% { background: transparent; }
+            18% { background: linear-gradient(90deg, #dceeff 0%, #edf7ff 100%); }
+            72% { background: linear-gradient(90deg, #dceeff 0%, #edf7ff 100%); }
+            100% { background: transparent; }
+        }
+    </style>
+</head>
+
+<body>
+    <h2 class="dragable p-1 sticky-top bg-white">
+        <center>塞壬唱片下载器</center>
+    </h2>
+    <div class="container">
+        <div class="d-flex gap-2 align-items-center">
+            <div style="flex-grow: 1;">
+                <input type="text" id="searchBox" class="form-control" placeholder="输入搜索文本"
+                    onkeydown="searchWithEnter(event)" autofocus>
+            </div>
+            <div class="ms-2">
+                <button type="button" class="btn btn-danger" id="download-all-button" onclick="downloadAll()">ALL!（下载全部）</button>
+                <button type="button" class="btn  btn-success" id="setting" data-bs-toggle="modal"
+                    data-bs-target="#settingModal">设置</button>
+                <button type="button" class="btn  btn-info" id="setting" data-bs-toggle="modal"
+                    data-bs-target="#introModal">功能</button>
+                <button type="button" class="btn  btn-warning" data-bs-toggle="modal" id="aboutbtn"
+                    data-bs-target="#exampleModal">关于</button>
+            </div>
+        </div>
+        <div class="small text-secondary mt-2 directory-label">下载目录：<span id="current-directory">加载中</span></div>
+        <div id="maindiv" class="mt-1">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th scope="col">名称</th>
+                        <th scope="col">专辑</th>
+                        <th scope="col">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="pending-group">
+                    <tr id="pending-group-header" class="table-light"><th colspan="3"><button id="pending-toggle" type="button" class="btn btn-link p-0 text-decoration-none group-toggle">未下载（<span id="pending-count">0</span>）</button></th></tr>
+                </tbody>
+                <tbody id="downloaded-group">
+                    <tr id="downloaded-group-header" class="table-light"><th colspan="3"><button id="downloaded-toggle" type="button" class="btn btn-link p-0 text-decoration-none group-toggle">已下载（<span id="downloaded-count">0</span>）</button></th></tr>
+                </tbody>
+            </table>
+        </div>
+        <div>
+            build with : Node.js <span id="node-version"></span>,
+            Chromium <span id="chrome-version"></span>,
+            and Electron <span id="electron-version"></span>.
+        </div>
+    </div>
+    <div class="sticky-bottom">
+        <div class="card m-2 border rounded-0  rounded-top-4">
+            <div class="card-body clearfix">
+                <strong>下载状态：</strong> <span id="d_song"></span><span id="d_status">等待下载</span> <span id="d_info"></span>
+                <div class="float-end">
+                    <button type="button" class="btn btn-sm btn-success" onclick="openfolder()">打开下载目录</button>
+                    <button type="button" class="btn btn-sm btn-danger" onclick="cancelDownload()">取消下载</button>
+                </div>
+            </div>
+            <svg style="position: absolute;" class="fixed-bottom" version="1.1" baseProfile="full" width="100%"
+                height="8px" viewBox="0 0 1600 10" xmlns="http://www.w3.org/2000/svg">
+                <rect x="0" y="0" width="1600" height="10" fill="lightgrey" />
+                <rect id="dl1" x="0" y="0" width="0" height="10" fill="limegreen" />
+                <!-- <rect id ="dl2"  x="100" y="0" width="50" height="10" fill="limegreen" />
+                <rect id ="dl3"  x="200" y="0" width="50" height="10" fill="limegreen" />
+                <rect id ="dl4"  x="300" y="0" width="50" height="10" fill="limegreen" />
+                <rect id ="dl5"  x="400" y="0" width="50" height="10" fill="limegreen" />
+                <rect id ="dl6"  x="500" y="0" width="50" height="10" fill="limegreen" />
+                <rect id ="dl7"  x="600" y="0" width="50" height="10" fill="limegreen" />
+                <rect id ="dl8"  x="700" y="0" width="50" height="10" fill="limegreen" />
+                <rect id ="dl9"  x="800" y="0" width="50" height="10" fill="limegreen" />
+                <rect id="dl10"  x="900" y="0" width="50" height="10" fill="limegreen" />
+                <rect id="dl11" x="1000" y="0" width="50" height="10" fill="limegreen" />
+                <rect id="dl12" x="1100" y="0" width="50" height="10" fill="limegreen" />
+                <rect id="dl13" x="1200" y="0" width="50" height="10" fill="limegreen" />
+                <rect id="dl14" x="1300" y="0" width="50" height="10" fill="limegreen" />
+                <rect id="dl15" x="1400" y="0" width="50" height="10" fill="limegreen" />
+                <rect id="dl16" x="1500" y="0" width="50" height="10" fill="limegreen" /> -->
+            </svg>
+
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal fade" id="exampleModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="exampleModalLabel">关于</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" onclick="(()=>{
+                        const myModalEl = document.getElementById('exampleModal')
+                        myModalEl.addEventListener('hidden.bs.modal', event => {
+                            document.getElementById('searchBox').focus();
+})
+
+                    })()"></button>
+                </div>
+                <div class="modal-body">
+                    <strong>版权声明：</strong><br>
+                    本工具旨在辅助用户下载指定网址<code
+                        class="text-nowrap">monster-siren.hypergryph.com</code>的资源，仅供学习和研究使用。本工具不储存资源，没有资源的版权。使用本工具下载的任何内容，用户应有保护知识产权的意识，不侵犯任何第三方的版权或其他合法权益。<br>
+                    <strong>免责声明：</strong><br>
+                    工具提供者不对用户使用本工具造成的任何直接、间接、特殊或后果性损害负责。用户应自行承担使用本工具的风险和后果。<br>
+                    <strong>版权尊重：</strong><br>
+                    我们强烈反对任何形式的侵权行为。用户在使用本工具时，应尊重内容创作者的版权，不用于任何商业用途。<br>
+                    <strong>用户责任：</strong><br>
+                    用户应确保其使用本工具的行为符合当地法律法规。对于违反法律法规的行为，用户应自行承担相应的法律责任。<br>
+                    <strong>开源协议：</strong><br>
+                    本工具是非赢利的、开源的，开源地址：<code
+                        class="text-nowrap">https://github.com/chenwenda316/monster-siren-download-helper</code>。用户可以自由地使用、修改和分发本工具，但需遵守法律法规。<br>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal" onclick="(()=>{
+                        const myModalEl = document.getElementById('exampleModal')
+                        myModalEl.addEventListener('hidden.bs.modal', event => {
+                            document.getElementById('searchBox').focus();
+})
+
+                    })()">理解</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" hidden id="d_warn" data-bs-toggle="modal" data-bs-target="#warningModal"></button>
+    <!-- Modal -->
+    <div class="modal fade" id="warningModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="exampleModalLabel">错误</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    请等待当前下载完成。
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">好吧</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Modal -->
+    <div class="modal fade" id="settingModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="exampleModalLabel">设置</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-secondary mb-3">当前目录：<span id="settings-directory"></span></div>
+                    <input class="form-check-input" type="checkbox" value="" id="checkwav" onclick="changecheckwav()"
+                        >
+                    <label class="form-check-label" for="checkwav">
+                        是否删除源wav格式文件?
+                    </label>
+                    <br>
+                    <input class="form-check-input" type="checkbox" value="" id="checkdir" onclick="changecheckdir()"
+                        checked>
+                    <label class="form-check-label" for="checkdir">
+                        是否分专辑文件夹保存音乐?
+                    </label>
+                    <br>
+                    <input class="form-check-input" type="checkbox" value="" id="checkgroup" onclick="changecheckgroup()"
+                        checked>
+                    <label class="form-check-label" for="checkgroup">
+                        按已下载和未下载分类显示
+                    </label>
+                    <br>
+                    <br>
+                    <button type="button" class="btn btn-sm btn-success" onclick="selectfolder()">指定下载路径</button>
+                    <button type="button" class="btn btn-sm btn-danger" onclick="deltemp()">清除缓存</button>
+
+                </div>
+                <div class="modal-footer">
+                    <button type="button" id="closesetting" class="btn btn-primary" data-bs-dismiss="modal">完毕</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <button type="button" hidden id="showmusicinfo" data-bs-toggle="modal" data-bs-target="#infoModal"></button>
+    <!-- Modal -->
+    <div class="modal fade" id="infoModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="exampleModalLabel"><span id="info_name"></span></h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="card">
+                        <img id="info_pic" src="" class="card-img-top" alt="...">
+                        <div class="card-body">
+                            <p class="card-text">音频地址:<span id="info_src"></span></p>
+                            <p class="card-text">歌词地址:<span id="info_lrc"></span></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">了解</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" hidden id="showalert" data-bs-toggle="modal" data-bs-target="#alertModal"></button>
+    <!-- Modal -->
+    <div class="modal fade" id="alertModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="exampleModalLabel"><span id="info_name"></span></h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    请重启软件。
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">好,自行重启</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" hidden id="showinfo" data-bs-toggle="modal" data-bs-target="#introModal"></button>
+    <!-- Modal -->
+    <div class="modal fade" id="introModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="exampleModalLabel"><span id="info_name"></span></h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="card">
+                        <div class="card-body">
+                            <strong>v5.0</strong>
+                            <p class="card-text">1.优化了软件下载音乐的速度</p>
+                            <p class="card-text">2.软件内音乐按已下载或未下载折叠分类</p>
+                            <p class="card-text">3.可自动获取当前目录内已下载音乐</p>
+                            <p class="card-text">4.设置内选项可自动保存</p>
+                            <p class="card-text">5.调整了软件的UI表现</p>
+                            <p class="card-text">6.修复了一些已知问题</p>
+                            <p class="card-text text-end mb-0">——MXWF</p>
+                            <div class="d-none">
+                            <p class="card-text">1.优化软件了下载音乐的性能</p>
+                            <p class="card-text">2.软件内音乐按已下载或未下载折叠分类</p>
+                            <p class="card-text">3.可自动获取当前目录内已下载音乐</p>
+                            <p class="card-text">4.设置可自动保存</p>
+                            <p class="card-text">5.调整了UI表现</p>
+                            <p class="card-text">6.修复了已知bug</p>
+                            <p class="card-text text-end mb-0">——MXWF</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-body">
+                            <strong>v4.0</strong>
+                            <p class="card-text">1.可能修复了一些已知问题</p>
+                            <p class="card-text">2.修复“Who's hiding?”无法下载的问题。</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-body">
+                            <strong>v3.0</strong>
+                            <p class="card-text">1.修复了一些已知问题</p>
+                            <p class="card-text">2.可以更改保存路径</p>
+                            <p class="card-text">3.记录已下载完成的文件（如果想重复下载，请清除缓存删除记录）</p>
+                            <p class="card-text">4.可以删除缓存</p>
+                            <p class="card-text">5.废弃从此向下下载功能</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-body">
+                            <strong>v2.0</strong>
+                            <p class="card-text">1.修复了一些已知问题</p>
+                            <p class="card-text">2.增加从此向下下载功能</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-body">
+                            <strong>v1.0</strong>
+                            <p class="card-text">1.可以下载单曲、专辑、ALL！</p>
+                            <p class="card-text">2.可以搜索</p>
+                            <p class="card-text">3.默认将wav转换为flac，并为歌曲添加封面等元信息</p>
+                            <p class="card-text">4.默认歌曲分别存在文件夹</p>
+                            <p class="card-text">5.我家的猫会后空翻</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">挺好</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 您也可以此进程中运行其他文件 -->
+    <script src="./bootstrap.bundle.min.js"></script>
+    <script src="./song-groups.js"></script>
+    <script src="./download-queue.js"></script>
+    <script src="./renderer.js"></script>
+    <script src="./init.js"></script>
+</body>
+
+</html>

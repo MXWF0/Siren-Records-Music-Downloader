@@ -1,8 +1,8 @@
 mod downloads;
 
 use downloads::{
-    cancel_download, fetch_catalog, recover_downloads, start_download, validate_download_directory,
-    DownloadManager,
+    cancel_download, fetch_catalog, fetch_song_detail, recover_downloads, start_download,
+    validate_download_directory, verify_download_manifest, DownloadManager,
 };
 use serde::Serialize;
 
@@ -20,7 +20,7 @@ fn platform_info(_app: tauri::AppHandle) -> PlatformInfo {
     PlatformInfo {
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
-        app_version: "v1.1".to_string(),
+        app_version: format!("v{}", env!("CARGO_PKG_VERSION")),
         runtime: "Tauri 2",
     }
 }
@@ -37,7 +37,9 @@ pub fn run() {
             cancel_download,
             recover_downloads,
             validate_download_directory,
-            fetch_catalog
+            fetch_catalog,
+            fetch_song_detail,
+            verify_download_manifest
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Siren Records application");

@@ -3,7 +3,7 @@ import { load } from '@tauri-apps/plugin-store';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { defaultSettings, normalizeSettings, type AppSettings } from '../settings';
-import type { DownloadEvents, DownloadRequest, PlatformBridge, PlatformInfo } from './types';
+import type { DownloadEvents, DownloadRequest, PersistedQueueState, PlatformBridge, PlatformInfo } from './types';
 
 let storePromise: ReturnType<typeof load> | undefined;
 const fallbackSettingsKey = 'siren-records.tauri-settings.v1';
@@ -46,6 +46,7 @@ const windowControls = {
 
 export const tauriPlatform: PlatformBridge = {
   kind: 'tauri',
+  maxConcurrentDownloads: 3,
   windowControls,
 
   async getSettings() {
@@ -81,6 +82,33 @@ export const tauriPlatform: PlatformBridge = {
 
   async loadOfficialCatalog() {
     return invoke<{ albums: unknown; songs: unknown }>('fetch_catalog');
+  },
+
+  async loadSongDetails(id) {
+    return invoke<unknown>('fetch_song_detail', { id });
+  },
+
+  async loadDownloadedIds() {
+    return invoke<string[]>('verify_download_manifest');
+  },
+
+  async loadQueueState() {
+    try {
+      const store = await getStore();
+      return await store.get<PersistedQueueState>('downloadQueue') ?? null;
+    } catch {
+      return null;
+    }
+  },
+
+  async saveQueueState(state) {
+    try {
+      const store = await getStore();
+      await store.set('downloadQueue', state);
+      await store.save();
+    } catch {
+      // Queue persistence is best effort and must never block a download.
+    }
   },
 
   async getPlatformInfo() {

@@ -1,0 +1,46 @@
+# User downloads and application runtime data
+monster-siren/
+downloads/
+tmp/
+**/tmp/active/
+*.part
+*.source
+*.no_cover.flac
+
+# Local settings, logs, and caches
+settings.json
+*.log
+npm-debug.log*
+*.cache
+.cache/
+
+# Virtual environments and Python caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# Build and editor intermediates
+build/
+dist/
+out/
+release/
+coverage/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# Packaged Electron runtime; source remains in resources/app/
+/塞壬音乐下载器.exe
+/LICENSES.chromium.html
+/ffmpeg.exe
+/ffmpeg.dll
+/*.dll
+/*.pak
+/*.bin
+/*.dat
+/locales/
+/version
+/vk_swiftshader_icd.json

@@ -2,27 +2,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { friendlyDownloadError, normalizeApiBase, resolveApiUrl, resolveDownloadProxy } from '../src/platform/web';
 
 describe('web download errors', () => {
-  it('explains expired CDN URLs in static preview mode', () => {
-    const message = friendlyDownloadError(new Error('音频请求失败：HTTP 403'), true);
-    expect(message).toContain('官网音频地址已过期');
-    expect(message).toContain('npm run web');
+  it('explains rejected origins without exposing backend details', () => {
+    const message = friendlyDownloadError(new Error('当前网站没有权限使用此下载接口'), false);
+    expect(message).toContain('未获得下载服务授权');
+    expect(message).toContain('允许来源');
   });
 
-  it('does not expose a direct CDN navigation fallback', () => {
+  it('explains how a local static preview gets a download service', () => {
     const message = friendlyDownloadError(new TypeError('Failed to fetch'), true);
-    expect(message).toContain('未连接官网代理');
-    expect(message).toContain('/api');
+    expect(message).toContain('尚未配置下载服务');
+    expect(message).toContain('维护者');
   });
 
-  it('points HTTP pages to the local proxy when it is missing', () => {
-    const message = friendlyDownloadError(new Error('音频请求失败：HTTP 404'), false);
-    expect(message).toContain('官网下载代理不可用');
-    expect(message).toContain('/api/audio?id=:id');
+  it('points static hosts to their proxy configuration when /api is missing', () => {
+    const message = friendlyDownloadError(new Error('下载服务返回 HTTP 404'), false);
+    expect(message).toContain('没有可用的下载代理');
+    expect(message).toContain('VITE_API_BASE_URL');
   });
 
   it('normalizes a remote proxy origin for static deployments', () => {
     expect(normalizeApiBase(' https://proxy.example/// ')).toBe('https://proxy.example');
     expect(resolveApiUrl('/api/audio?id=42', 'https://proxy.example/')).toBe('https://proxy.example/api/audio?id=42');
+    expect(normalizeApiBase('javascript:alert(1)')).toBe('');
+    expect(normalizeApiBase('not a URL')).toBe('');
   });
 
   it('detects the local proxy when a file page has no configured base', async () => {

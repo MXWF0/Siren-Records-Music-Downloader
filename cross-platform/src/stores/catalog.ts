@@ -14,12 +14,14 @@ export interface CatalogStore {
   previewData: Ref<boolean>;
   errorMessage: Ref<string>;
   visibleSongs: ComputedRef<Song[]>;
+  matchCount: ComputedRef<number>;
   pendingSongs: ComputedRef<Song[]>;
   downloadedSongs: ComputedRef<Song[]>;
   load(): Promise<void>;
   nextMatch(): string | null;
   clearSearch(): void;
   markDownloaded(id: string): void;
+  replaceDownloaded(ids: string[]): void;
 }
 
 const downloadedStorageKey = 'siren-records.downloaded.v1';
@@ -57,8 +59,9 @@ export function createCatalogStore(officialLoader?: () => Promise<OfficialCatalo
     const categoryMatches = filter.value === 'all'
       || (filter.value === 'downloaded' && downloaded)
       || (filter.value === 'pending' && !downloaded);
-    return categoryMatches;
+    return categoryMatches && matchesSearch(song);
   }));
+  const matchCount = computed(() => searchQuery.value.trim() ? visibleSongs.value.length : 0);
   const pendingSongs = computed(() => visibleSongs.value.filter((song) => !downloadedIds.value.has(song.cid)));
   const downloadedSongs = computed(() => visibleSongs.value.filter((song) => downloadedIds.value.has(song.cid)));
 
@@ -111,8 +114,18 @@ export function createCatalogStore(officialLoader?: () => Promise<OfficialCatalo
     }
   }
 
+  function replaceDownloaded(ids: string[]) {
+    downloadedIds.value = new Set(ids.map(String));
+    try {
+      localStorage.setItem(downloadedStorageKey, JSON.stringify([...downloadedIds.value]));
+    } catch {
+      // Desktop manifest verification remains authoritative if storage is unavailable.
+    }
+  }
+
   return {
     albums, songs, downloadedIds, searchQuery, filter, highlightedId, loading, previewData, errorMessage,
-    visibleSongs, pendingSongs, downloadedSongs, load, nextMatch, clearSearch, markDownloaded
+    visibleSongs, matchCount, pendingSongs, downloadedSongs, load, nextMatch, clearSearch,
+    markDownloaded, replaceDownloaded
   };
 }
