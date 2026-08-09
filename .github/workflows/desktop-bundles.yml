@@ -14,13 +14,6 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    env:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     strategy:
       fail-fast: false
       matrix:
@@ -91,13 +84,25 @@ jobs:
 
       - name: Build native installer
         working-directory: cross-platform
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run bundle -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       - name: Mark unsigned macOS artifact
-        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE == ''
+        if: runner.os == 'macOS'
         working-directory: cross-platform/src-tauri/target/${{ matrix.target }}/release/bundle
         shell: bash
-        run: printf '%s\n' 'UNSIGNED: macOS signing and notarization secrets were not configured.' > SIGNING-STATUS.txt
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            printf '%s\n' 'UNSIGNED: macOS signing and notarization secrets were not configured.' > SIGNING-STATUS.txt
+          fi
 
       - name: Upload distributable files
         uses: actions/upload-artifact@v4
