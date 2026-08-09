@@ -1,7 +1,7 @@
 import { corsHeaders, enforceRequestPolicy, getCatalog, sendJson } from '../scripts/official-proxy.mjs';
 
 export default async function handler(request, response) {
-  if (!enforceRequestPolicy(request, response, 'catalog', { count: request.method === 'GET' })) return;
+  if (!await enforceRequestPolicy(request, response, 'catalog', { count: request.method === 'GET' })) return;
   if (request.method === 'OPTIONS') {
     response.statusCode = 204;
     Object.entries(corsHeaders(request)).forEach(([name, value]) => response.setHeader(name, value));
@@ -23,7 +23,7 @@ export default async function handler(request, response) {
     if (request.method === 'HEAD') response.end();
     else response.end(JSON.stringify(payload));
   } catch (error) {
-    const reason = error instanceof Error ? error.message : '未知网络错误';
-    sendJson(response, 502, { error: `无法获取官网目录：${reason}` }, request);
+    console.error('[SirenRecords] serverless catalog proxy failed', error);
+    sendJson(response, 502, { error: '官网目录暂时不可用，请稍后重试' }, request);
   }
 }

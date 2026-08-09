@@ -11,7 +11,8 @@ describe('normalizeSettings', () => {
       separateDirectory: false,
       groupByDownload: false
     })).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
+      downloadDirectory: '',
       separateDirectory: false,
       groupByDownload: false,
       concurrentDownloads: 2
@@ -23,7 +24,10 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ concurrentDownloads: 0 }).concurrentDownloads).toBe(1);
   });
 
-  it('ignores removed download options from legacy settings', () => {
-    expect(normalizeSettings({ downloadDirectory: 'D:\\Music', outputFormat: 'flac' })).toEqual(defaultSettings);
+  it('migrates the desktop directory and ignores removed output options', () => {
+    expect(normalizeSettings({ downloadDirectory: 'D:\\Music', outputFormat: 'flac' })).toEqual({
+      ...defaultSettings,
+      downloadDirectory: 'D:\\Music'
+    });
   });
 });

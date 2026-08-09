@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue';
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import type { AppSettings } from '../settings';
 import type { QueueStore } from '../stores/queue';
 
@@ -8,8 +8,60 @@ const active = computed(() => props.queue.active.value);
 const pending = computed(() => props.queue.pending.value);
 const failed = computed(() => props.queue.failed.value);
 const completed = computed(() => props.queue.completed.value);
+const handedOff = computed(() => props.queue.handedOff.value);
 const emit = defineEmits<{ close: []; status: [message: string, tone?: 'normal' | 'success' | 'error'] }>();
-const collapsed = reactive({ pending: true, failed: true, completed: true });
+const collapsed = reactive({ pending: true, failed: true, handedOff: true, completed: true });
+const drawer = ref<HTMLElement | null>(null);
+const closeButton = ref<HTMLButtonElement | null>(null);
+let previousFocus: HTMLElement | null = null;
+let previousBodyOverflow = '';
+
+function focusableElements() {
+  if (!drawer.value) return [];
+  return Array.from(drawer.value.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  ));
+}
+
+function handleDialogKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    emit('close');
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = focusableElements();
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function restorePageInteraction() {
+  document.body.style.overflow = previousBodyOverflow;
+  previousFocus?.focus();
+  previousFocus = null;
+}
+
+watch(() => props.open, async (open) => {
+  if (open) {
+    previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    await nextTick();
+    closeButton.value?.focus();
+  } else {
+    restorePageInteraction();
+  }
+});
+
+onBeforeUnmount(restorePageInteraction);
 
 function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
@@ -24,11 +76,11 @@ function formatEta(seconds: number | null) {
 
 <template>
   <Transition name="drawer-fade">
-    <div v-if="open" class="queue-layer" @click.self="emit('close')" @keydown.esc="emit('close')">
-      <aside class="queue-drawer" role="dialog" aria-modal="true" aria-labelledby="queue-heading">
+    <div v-if="open" class="queue-layer" @click.self="emit('close')" @keydown="handleDialogKeydown">
+      <aside ref="drawer" class="queue-drawer" role="dialog" aria-modal="true" aria-labelledby="queue-heading">
         <header class="drawer-header">
           <div><h2 id="queue-heading">下载队列</h2><span>并发数量：{{ settings.concurrentDownloads }}</span></div>
-          <button type="button" class="drawer-close" aria-label="关闭下载队列" @click="emit('close')">×</button>
+          <button ref="closeButton" type="button" class="drawer-close" aria-label="关闭下载队列" @click="emit('close')">×</button>
         </header>
 
         <div class="queue-scroll">
@@ -44,6 +96,14 @@ function formatEta(seconds: number | null) {
               </article>
             </div>
             <div v-else class="queue-empty">当前没有正在下载的项目</div>
+          </section>
+
+          <section class="queue-section">
+            <button type="button" class="queue-section-toggle" :aria-expanded="!collapsed.handedOff" @click="collapsed.handedOff = !collapsed.handedOff"><span><i class="queue-dot pending-dot" aria-hidden="true"></i>已交给浏览器</span><small>{{ handedOff.length }} 项 · {{ collapsed.handedOff ? '展开' : '收起' }}⌄</small></button>
+            <div v-if="!collapsed.handedOff" class="queue-list">
+              <article v-for="item in handedOff" :key="item.id" class="queue-item"><div class="queue-item-copy"><strong>{{ item.title }}</strong><span>{{ item.message }}</span></div></article>
+              <div v-if="!handedOff.length" class="queue-empty">没有浏览器接管的项目</div>
+            </div>
           </section>
 
           <section class="queue-section">
@@ -73,7 +133,7 @@ function formatEta(seconds: number | null) {
 
         <footer class="drawer-footer">
           <button type="button" class="outline-action" @click="queue.togglePaused(settings)">{{ queue.paused.value ? '继续队列' : '暂停队列' }}</button>
-          <button v-if="failed.length || completed.length" type="button" class="text-action" @click="queue.clearHistory()">清理历史记录</button>
+          <button v-if="failed.length || handedOff.length || completed.length" type="button" class="text-action" @click="queue.clearHistory()">清理历史记录</button>
         </footer>
       </aside>
     </div>

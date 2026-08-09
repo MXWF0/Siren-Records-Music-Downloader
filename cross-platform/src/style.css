@@ -294,6 +294,10 @@ main { padding: 30px; }
 .library-display-copy h3 { margin-bottom: 4px; font-size: 18px; }
 .library-display-copy > span { color: var(--muted); font-size: 12px; }
 .library-display-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.directory-setting { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.directory-setting > span { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.directory-setting strong { font-size: 12px; }
+.directory-setting small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .concurrency-setting { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; padding-top: 10px; border-top: 1px solid var(--line); }
 .concurrency-setting > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .concurrency-setting strong { font-size: 12px; }

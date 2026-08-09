@@ -1,4 +1,3 @@
-import { Readable } from 'node:stream';
 import {
   audioExtension,
   audioFileName,
@@ -11,9 +10,10 @@ import {
   validRangeHeader,
   validSongId
 } from '../../scripts/official-proxy.mjs';
+import { pipeLimitedResponse } from '../../scripts/proxy-stream.mjs';
 
 export default async function handler(request, response) {
-  if (!enforceRequestPolicy(request, response, 'audio', { count: request.method === 'GET' })) return;
+  if (!await enforceRequestPolicy(request, response, 'audio', { count: request.method === 'GET' })) return;
   if (request.method === 'OPTIONS') {
     response.statusCode = 204;
     Object.entries(corsHeaders(request)).forEach(([name, value]) => response.setHeader(name, value));
@@ -65,16 +65,14 @@ export default async function handler(request, response) {
       response.end();
       return;
     }
-    const stream = Readable.fromWeb(upstream.body);
-    response.on('close', () => stream.destroy());
-    stream.on('error', () => response.destroy());
-    stream.pipe(response);
+    const maxBytes = Number.parseInt(process.env.SIREN_MAX_AUDIO_BYTES || '', 10) || 1024 * 1024 * 1024;
+    await pipeLimitedResponse(upstream.body, response, maxBytes);
   } catch (error) {
     if (response.headersSent || response.destroyed) {
       response.destroy();
       return;
     }
-    const reason = error instanceof Error ? error.message : '未知网络错误';
-    sendJson(response, 502, { error: `下载服务暂时不可用：${reason}` }, request);
+    console.error('[SirenRecords] serverless audio proxy failed', error);
+    sendJson(response, 502, { error: '音频下载服务暂时不可用，请稍后重试' }, request);
   }
 }

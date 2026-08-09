@@ -3,7 +3,7 @@ import type { Song } from '../catalog';
 import type { PersistedQueueTask, PlatformBridge } from '../platform/types';
 import type { AppSettings } from '../settings';
 
-export type QueueState = 'pending' | 'downloading' | 'failed' | 'completed' | 'cancelled';
+export type QueueState = 'pending' | 'downloading' | 'failed' | 'completed' | 'handed_off' | 'cancelled';
 export type QueueNoticeTone = 'normal' | 'success' | 'error';
 
 export interface QueueItem {
@@ -35,6 +35,7 @@ export interface QueueStore {
   pending: ComputedRef<QueueItem[]>;
   failed: ComputedRef<QueueItem[]>;
   completed: ComputedRef<QueueItem[]>;
+  handedOff: ComputedRef<QueueItem[]>;
   enqueue(song: Song, force?: boolean): boolean;
   enqueueMany(songs: Song[], force?: boolean): number;
   restore(): Promise<void>;
@@ -95,6 +96,7 @@ export function createQueueStore(
   const pending = computed(() => items.value.filter((item) => item.state === 'pending'));
   const failed = computed(() => items.value.filter((item) => item.state === 'failed'));
   const completed = computed(() => items.value.filter((item) => item.state === 'completed'));
+  const handedOff = computed(() => items.value.filter((item) => item.state === 'handed_off'));
   const activeIds = new Set<string>();
   const startingIds = new Set<string>();
   let currentSettings: AppSettings | null = null;
@@ -128,7 +130,7 @@ export function createQueueStore(
 
   function enqueue(song: Song, force = false, shouldPersist = true) {
     const existing = find(song.cid);
-    if (existing && force && ['completed', 'failed', 'cancelled'].includes(existing.state)) {
+    if (existing && force && ['completed', 'handed_off', 'failed', 'cancelled'].includes(existing.state)) {
       Object.assign(existing, {
         title: song.name,
         album: song.albumName,
@@ -200,7 +202,7 @@ export function createQueueStore(
       try {
         const result = await platform.startDownload({
           id: next.id,
-          downloadDirectory: '',
+          downloadDirectory: settings.downloadDirectory,
           separateDirectory: settings.separateDirectory,
           fileName: next.fileName,
           title: next.title
@@ -291,15 +293,16 @@ export function createQueueStore(
         if (!item) return;
         activeIds.delete(value.id);
         startingIds.delete(value.id);
+        const handedOffToBrowser = value.outcome === 'handed_off';
         Object.assign(item, {
-          state: 'completed',
-          progress: 100,
+          state: handedOffToBrowser ? 'handed_off' : 'completed',
+          progress: handedOffToBrowser ? item.progress : 100,
           cancelling: false,
-          message: value.browserManaged ? '已交给浏览器下载管理器' : '下载完成'
+          message: handedOffToBrowser ? '已交给浏览器下载管理器，应用无法确认最终保存结果' : '下载完成'
         });
-        onCompleted(value.id);
+        if (!handedOffToBrowser) onCompleted(value.id);
         persist();
-        notify(value.browserManaged ? `《${item.title}》已交给浏览器下载` : `《${item.title}》下载完成`, 'success');
+        notify(handedOffToBrowser ? `《${item.title}》已交给浏览器下载` : `《${item.title}》下载完成`, 'success');
         void advance();
       },
       failed(value) {
@@ -328,7 +331,7 @@ export function createQueueStore(
   }
 
   return {
-    items, paused, notice, active, pending, failed, completed,
+    items, paused, notice, active, pending, failed, completed, handedOff,
     enqueue, enqueueMany, restore, runNext, togglePaused, cancel, retry, clearHistory, connect
   };
 }

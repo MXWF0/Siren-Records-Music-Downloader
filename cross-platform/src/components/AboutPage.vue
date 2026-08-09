@@ -3,10 +3,11 @@ import type { PlatformInfo } from '../platform/types';
 import type { AppSettings } from '../settings';
 import ToggleSwitch from './ToggleSwitch.vue';
 
-const props = defineProps<{ platformInfo: PlatformInfo; settings: AppSettings }>();
+const props = defineProps<{ platformInfo: PlatformInfo; settings: AppSettings; desktop: boolean }>();
 
 const emit = defineEmits<{
   updateSettings: [changes: Partial<AppSettings>];
+  chooseDirectory: [];
 }>();
 
 function updateConcurrency(event: Event) {
@@ -31,7 +32,11 @@ function updateConcurrency(event: Event) {
         <span>这些选项会立即保存，并应用到后续下载。</span>
       </div>
       <div class="library-display-options">
-        <ToggleSwitch :model-value="props.settings.separateDirectory" label="按专辑文件夹保存音乐" description="桌面版下载时按专辑归档。" class="display-toggle" @update:model-value="emit('updateSettings', { separateDirectory: $event })" />
+        <div v-if="props.desktop" class="directory-setting">
+          <span><strong>下载目录</strong><small>{{ props.settings.downloadDirectory || '使用系统默认下载目录' }}</small></span>
+          <button type="button" class="outline-action" @click="emit('chooseDirectory')">选择目录</button>
+        </div>
+        <ToggleSwitch v-if="props.desktop" :model-value="props.settings.separateDirectory" label="按专辑文件夹保存音乐" description="桌面版下载时按专辑归档。" class="display-toggle" @update:model-value="emit('updateSettings', { separateDirectory: $event })" />
         <ToggleSwitch :model-value="props.settings.groupByDownload" label="按已下载状态分类显示" description="分开展示已下载和未下载歌曲。" class="display-toggle" @update:model-value="emit('updateSettings', { groupByDownload: $event })" />
         <label class="concurrency-setting">
           <span><strong>同时下载任务</strong><small>可设置 1～3 个，默认同时下载 2 个。</small></span>

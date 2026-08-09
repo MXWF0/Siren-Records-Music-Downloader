@@ -17,6 +17,7 @@ export interface CatalogStore {
   matchCount: ComputedRef<number>;
   pendingSongs: ComputedRef<Song[]>;
   downloadedSongs: ComputedRef<Song[]>;
+  downloadedCount: ComputedRef<number>;
   load(): Promise<void>;
   nextMatch(): string | null;
   clearSearch(): void;
@@ -64,6 +65,10 @@ export function createCatalogStore(officialLoader?: () => Promise<OfficialCatalo
   const matchCount = computed(() => searchQuery.value.trim() ? visibleSongs.value.length : 0);
   const pendingSongs = computed(() => visibleSongs.value.filter((song) => !downloadedIds.value.has(song.cid)));
   const downloadedSongs = computed(() => visibleSongs.value.filter((song) => downloadedIds.value.has(song.cid)));
+  const downloadedCount = computed(() => songs.value.reduce(
+    (count, song) => count + (downloadedIds.value.has(song.cid) ? 1 : 0),
+    0
+  ));
 
   async function load() {
     loading.value = true;
@@ -125,7 +130,7 @@ export function createCatalogStore(officialLoader?: () => Promise<OfficialCatalo
 
   return {
     albums, songs, downloadedIds, searchQuery, filter, highlightedId, loading, previewData, errorMessage,
-    visibleSongs, matchCount, pendingSongs, downloadedSongs, load, nextMatch, clearSearch,
+    visibleSongs, matchCount, pendingSongs, downloadedSongs, downloadedCount, load, nextMatch, clearSearch,
     markDownloaded, replaceDownloaded
   };
 }

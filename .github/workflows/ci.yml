@@ -64,5 +64,40 @@ jobs:
       - name: Test and lint Rust backend
         working-directory: cross-platform/src-tauri
         run: |
+          cargo fmt --check
           cargo test --locked
           cargo clippy --locked -- -D warnings
+          cargo check --locked
+
+  browser:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cross-platform/package-lock.json
+      - name: Install dependencies and browsers
+        working-directory: cross-platform
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Build and run browser flows
+        working-directory: cross-platform
+        run: |
+          npm run build
+          npm run test:e2e
+
+  docker:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build image and smoke-test routes
+        working-directory: cross-platform
+        run: npm run test:docker

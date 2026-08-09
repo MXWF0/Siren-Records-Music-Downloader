@@ -15,6 +15,7 @@ type ViewName = 'library' | 'about';
 
 const activeView = ref<ViewName>('library');
 const showQueue = ref(false);
+const queueLauncher = ref<HTMLButtonElement | null>(null);
 const showBackToTop = ref(false);
 const selectedSong = ref<Song | null>(null);
 const settings = reactive<AppSettings>({ ...defaultSettings });
@@ -40,6 +41,18 @@ function setStatus(message: string, tone: 'normal' | 'success' | 'error' = 'norm
 function updateSettings(changes: Partial<AppSettings>) {
   Object.assign(settings, normalizeSettings({ ...settings, ...changes }));
   void queue.runNext(settings);
+}
+
+async function chooseDownloadDirectory() {
+  try {
+    const directory = await platform.selectDirectory();
+    if (!directory) return;
+    await platform.validateDownloadDirectory(directory);
+    updateSettings({ downloadDirectory: directory });
+    setStatus('下载目录已更新', 'success');
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : '无法选择下载目录', 'error');
+  }
 }
 
 function enqueue(song: Song, force = false) {
@@ -77,7 +90,7 @@ watch(queue.notice, (value) => {
   if (value) setStatus(value.message, value.tone);
 });
 
-onMounted(async () => {
+async function initializeApp() {
   const [storedSettings, info, , downloaded] = await Promise.allSettled([
     platform.getSettings(),
     platform.getPlatformInfo(),
@@ -90,29 +103,62 @@ onMounted(async () => {
   if (downloaded.status === 'fulfilled') catalog.replaceDownloaded(downloaded.value);
   else if (platform.kind === 'tauri') catalog.replaceDownloaded([]);
 
-  let recoveryError = '';
+  const initializationErrors: string[] = [];
   if (platform.kind === 'tauri') {
     try {
-      // Clean abandoned temporary files before restored tasks can start.
-      await platform.recoverDownloads('');
+      await platform.recoverDownloads(settings.downloadDirectory);
     } catch (error) {
-      recoveryError = error instanceof Error ? error.message : '无法清理上次未完成的临时文件';
+      initializationErrors.push(error instanceof Error ? error.message : '无法恢复上次未完成的下载');
     }
   }
   ready.value = true;
-  disposeDownloadEvents = await queue.connect();
-  await queue.restore();
-  if (!queue.paused.value) void queue.runNext(settings);
+  let queueConnected = false;
+  try {
+    disposeDownloadEvents = await queue.connect();
+    queueConnected = true;
+  } catch (error) {
+    initializationErrors.push(error instanceof Error ? error.message : '下载事件连接失败');
+    console.error('[SirenRecords] queue event initialization failed', error);
+  }
+  try {
+    await queue.restore();
+  } catch (error) {
+    initializationErrors.push(error instanceof Error ? error.message : '下载队列恢复失败');
+    console.error('[SirenRecords] queue restore failed', error);
+  }
+  if (queueConnected && !queue.paused.value) {
+    try {
+      await queue.runNext(settings);
+    } catch (error) {
+      initializationErrors.push(error instanceof Error ? error.message : '下载队列启动失败');
+      console.error('[SirenRecords] queue start failed', error);
+    }
+  }
 
-  if (recoveryError) {
-    setStatus(recoveryError, 'error');
+  if (initializationErrors.length) {
+    setStatus(initializationErrors[0], 'error');
   } else if (catalog.errorMessage.value) {
     setStatus(catalog.errorMessage.value, catalog.previewData.value ? 'normal' : 'error');
   } else if (storedSettings.status === 'fulfilled') {
     setStatus('音乐目录和下载队列已就绪', 'success');
   }
+}
+
+function openQueue() {
+  // WebKit does not always focus a button after a pointer click. Explicitly
+  // focus the opener so the dialog can restore a deterministic target.
+  queueLauncher.value?.focus();
+  showQueue.value = true;
+}
+
+onMounted(() => {
   window.addEventListener('scroll', updateBackToTop, { passive: true });
   updateBackToTop();
+  void initializeApp().catch((error) => {
+    ready.value = true;
+    console.error('[SirenRecords] application initialization failed', error);
+    setStatus(error instanceof Error ? error.message : '应用初始化失败，但仍可继续浏览', 'error');
+  });
 });
 
 onUnmounted(() => {
@@ -136,7 +182,14 @@ onUnmounted(() => {
         @details="selectedSong = $event"
         @status="setStatus"
       />
-      <AboutPage v-else :platform-info="platformInfo" :settings="settings" @update-settings="updateSettings" />
+      <AboutPage
+        v-else
+        :platform-info="platformInfo"
+        :settings="settings"
+        :desktop="platform.kind === 'tauri'"
+        @update-settings="updateSettings"
+        @choose-directory="chooseDownloadDirectory"
+      />
     </main>
 
     <footer v-if="activeView === 'library'" class="stage-two-footer" :data-tone="statusTone">
@@ -151,7 +204,7 @@ onUnmounted(() => {
         <span class="status-indicator" aria-hidden="true"></span><span>{{ status }}</span>
       </div>
       <div class="footer-actions">
-        <button type="button" class="queue-launcher" :class="{ highlighted: queue.items.value.length }" @click="showQueue = true">
+        <button ref="queueLauncher" type="button" class="queue-launcher" :class="{ highlighted: queue.items.value.length }" @click="openQueue">
           <span class="queue-launch-icon" aria-hidden="true">≋</span>下载队列
           <b v-if="queue.items.value.length">{{ queue.items.value.length }}</b>
         </button>

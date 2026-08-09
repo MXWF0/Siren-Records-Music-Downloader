@@ -48,7 +48,6 @@ interface DownloadWorkerStart {
   type: 'start';
   requestId: string;
   endpoint: string;
-  mode: 'stream' | 'blob';
   range?: string;
 }
 
@@ -78,14 +77,6 @@ interface DownloadWorkerChunk {
   total: number | null;
 }
 
-interface DownloadWorkerBlob {
-  type: 'blob';
-  requestId: string;
-  blob: Blob;
-  loaded: number;
-  total: number | null;
-}
-
 interface DownloadWorkerProgress {
   type: 'progress';
   requestId: string;
@@ -103,7 +94,7 @@ interface DownloadWorkerTerminal {
   total?: number | null;
 }
 
-type DownloadWorkerMessage = DownloadWorkerReady | DownloadWorkerResponse | DownloadWorkerChunk | DownloadWorkerBlob | DownloadWorkerProgress | DownloadWorkerTerminal;
+type DownloadWorkerMessage = DownloadWorkerReady | DownloadWorkerResponse | DownloadWorkerChunk | DownloadWorkerProgress | DownloadWorkerTerminal;
 
 interface ActiveDownload {
   controller: AbortController;
@@ -121,7 +112,7 @@ export interface WebDownloadRecord {
   filename: string;
   size: number;
   downloadedAt: number;
-  status: 'completed' | 'failed' | 'cancelled';
+  status: 'completed' | 'handed_off' | 'failed' | 'cancelled';
 }
 
 export function normalizeApiBase(value: unknown): string {
@@ -390,8 +381,7 @@ export function friendlyDownloadError(error: unknown, staticFileMode: boolean) {
   return message || (staticFileMode ? staticDownloadHint : '浏览器下载失败');
 }
 
-function launchBrowserManagedDownload(blob: Blob, suggestedName: string) {
-  const endpoint = URL.createObjectURL(blob);
+export function handOffBrowserManagedDownload(endpoint: string, suggestedName: string) {
   const anchor = document.createElement('a');
   anchor.href = endpoint;
   anchor.download = suggestedName;
@@ -401,22 +391,6 @@ function launchBrowserManagedDownload(blob: Blob, suggestedName: string) {
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  // Keep the URL alive until the browser has queued the download, then release
-  // it so large fallback blobs do not stay reachable indefinitely.
-  globalThis.setTimeout(() => URL.revokeObjectURL(endpoint), 30_000);
-}
-
-function filenameFromContentDisposition(header: string, fallback: string) {
-  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  const plain = header.match(/filename="?([^";]+)"?/i)?.[1];
-  let value = fallback;
-  if (encoded) {
-    try { value = decodeURIComponent(encoded); } catch { /* keep fallback */ }
-  } else if (plain) {
-    value = plain;
-  }
-  const cleaned = value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
-  return cleaned || fallback;
 }
 
 function pickerIsAvailable() {
@@ -429,11 +403,22 @@ function hasUserActivation() {
   return Boolean(navigator.userActivation?.isActive);
 }
 
+export function canUseFileSystemStream(
+  pickerAvailable = pickerIsAvailable(),
+  userActivated = hasUserActivation()
+) {
+  return pickerAvailable && userActivated;
+}
+
+export function rangeHeaderForOffset(offset: number) {
+  return Number.isSafeInteger(offset) && offset > 0 ? `bytes=${offset}-` : undefined;
+}
+
 async function requestSaveFileHandle(request: DownloadRequest): Promise<FileHandleLike | null> {
   // A picker is a permission-gated operation. Only ask during the first user
   // gesture; queued songs afterwards use the browser download manager without
   // prompting for every item.
-  if (savePickerAttempted || !pickerIsAvailable() || !hasUserActivation()) return null;
+  if (savePickerAttempted || !canUseFileSystemStream()) return null;
   savePickerAttempted = true;
   const picker = (window as SavePickerWindow).showSaveFilePicker;
   if (!picker) return null;
@@ -520,7 +505,7 @@ async function runMainThreadFallback(
   request: DownloadRequest,
   endpoint: string,
   active: ActiveDownload,
-  fileHandle: FileHandleLike | null
+  fileHandle: FileHandleLike
 ): Promise<number> {
   const response = await fetch(endpoint, {
     cache: 'no-store',
@@ -530,45 +515,34 @@ async function runMainThreadFallback(
   if (!response.ok) throw new Error(await readError(response, `HTTP ${response.status}`));
   const contentLength = Number(response.headers.get('content-length'));
   const total = Number.isFinite(contentLength) && contentLength >= 0 ? contentLength : null;
-  const suggestedName = filenameFromContentDisposition(
-    response.headers.get('content-disposition') || '',
-    request.fileName || `${request.id}.wav`
-  );
   const startedAt = performance.now();
-  if (fileHandle) {
-    const writer = await fileHandle.createWritable();
-    try {
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('娴忚鍣ㄦ棤娉曡鍙栭煶棰戞祦');
-      let loaded = 0;
-      while (true) {
-        if (active.controller.signal.aborted) throw cancelledError();
-        const result = await reader.read();
-        if (result.done) break;
-        if (!result.value) continue;
-        await writer.write(result.value.buffer.slice(result.value.byteOffset, result.value.byteOffset + result.value.byteLength));
-        loaded += result.value.byteLength;
-        emitProgress(request.id, loaded, total, startedAt);
-      }
-      await writer.close();
-      return loaded;
-    } catch (error) {
-      if (writer.abort) await writer.abort(error).catch(() => undefined);
-      throw error;
+  const writer = await fileHandle.createWritable();
+  try {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('浏览器无法读取音频响应流');
+    let loaded = 0;
+    while (true) {
+      if (active.controller.signal.aborted) throw cancelledError();
+      const result = await reader.read();
+      if (result.done) break;
+      if (!result.value) continue;
+      await writer.write(result.value.buffer.slice(result.value.byteOffset, result.value.byteOffset + result.value.byteLength));
+      loaded += result.value.byteLength;
+      emitProgress(request.id, loaded, total, startedAt);
     }
+    await writer.close();
+    return loaded;
+  } catch (error) {
+    if (writer.abort) await writer.abort(error).catch(() => undefined);
+    throw error;
   }
-  const blob = await response.blob();
-  if (active.controller.signal.aborted) throw cancelledError();
-  emitProgress(request.id, blob.size, total ?? blob.size, startedAt);
-  launchBrowserManagedDownload(blob, suggestedName);
-  return blob.size;
 }
 
 async function runWorkerDownload(
   request: DownloadRequest,
   endpoint: string,
   active: ActiveDownload,
-  fileHandle: FileHandleLike | null
+  fileHandle: FileHandleLike
 ): Promise<number> {
   if (active.controller.signal.aborted) throw cancelledError();
   let worker: Worker;
@@ -615,7 +589,7 @@ async function runWorkerDownload(
 
   let writer: FileWritableLike | null = null;
   try {
-    writer = fileHandle ? await fileHandle.createWritable() : null;
+    writer = await fileHandle.createWritable();
   } catch (error) {
     worker.removeEventListener('error', onBootstrapError);
     worker.removeEventListener('messageerror', onBootstrapMessageError);
@@ -637,7 +611,6 @@ async function runWorkerDownload(
   active.worker = worker;
   const requestId = `${request.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const startedAt = performance.now();
-  const mode = fileHandle ? 'stream' : 'blob';
 
   return new Promise<number>((resolve, reject) => {
     let settled = false;
@@ -647,8 +620,6 @@ async function runWorkerDownload(
     let resumeOffset = 0;
     let resumeTotal: number | null = null;
     let resumeAttempted = false;
-    let fallbackBlob: Blob | undefined;
-    let suggestedName = request.fileName || `${request.id}.wav`;
 
     const cleanup = () => {
       active.controller.signal.removeEventListener('abort', cancelWorker);
@@ -668,9 +639,8 @@ async function runWorkerDownload(
       settled = true;
       void writeChain.then(async () => {
         if (writer) await writer.close();
-        if (!fileHandle && fallbackBlob) launchBrowserManagedDownload(fallbackBlob, suggestedName);
         cleanup();
-        resolve(lastLoaded || fallbackBlob?.size || 0);
+        resolve(lastLoaded);
       }).catch((error) => {
         cleanup();
         const normalized = normalizeDownloadError(error);
@@ -701,7 +671,6 @@ async function runWorkerDownload(
       if (message.type === 'ready') return;
       if (message.requestId !== requestId || settled) return;
       if (message.type === 'response') {
-        suggestedName = filenameFromContentDisposition(message.contentDisposition, suggestedName);
         if (resumeOffset > 0 && message.status !== 206) {
           fail(new Error('服务器不支持断点续传，请重新下载'));
           return;
@@ -734,13 +703,6 @@ async function runWorkerDownload(
         emitProgress(request.id, lastLoaded, lastTotal, startedAt);
         return;
       }
-      if (message.type === 'blob') {
-        fallbackBlob = message.blob;
-        lastLoaded = message.loaded;
-        lastTotal = message.total;
-        emitProgress(request.id, lastLoaded, lastTotal, startedAt);
-        return;
-      }
       if (message.type === 'cancelled') return fail(cancelledError());
       if (message.type === 'failed') {
         const currentLoaded = resumeOffset + (message.loaded || 0);
@@ -752,8 +714,8 @@ async function runWorkerDownload(
             .then(() => writer.seek!(resumeOffset))
             .then(() => {
               if (!settled) postWorker({
-                type: 'start', requestId, endpoint, mode,
-                range: `bytes=${resumeOffset}-`
+                type: 'start', requestId, endpoint,
+                range: rangeHeaderForOffset(resumeOffset)
               } satisfies DownloadWorkerStart);
             })
             .catch((error) => { fail(error); });
@@ -791,7 +753,7 @@ async function runWorkerDownload(
       }, event);
       fail(error);
     });
-    postWorker({ type: 'start', requestId, endpoint, mode } satisfies DownloadWorkerStart);
+    postWorker({ type: 'start', requestId, endpoint } satisfies DownloadWorkerStart);
   });
 }
 
@@ -821,6 +783,19 @@ async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
     endpoint = apiBase
       ? resolveApiUrl(`/api/audio?id=${encodeURIComponent(request.id)}`, apiBase)
       : `/api/audio?id=${encodeURIComponent(request.id)}`;
+    if (!fileHandle) {
+      handOffBrowserManagedDownload(endpoint, request.fileName || `${request.id}.wav`);
+      await saveDownloadRecord({
+        cid: request.id,
+        name: request.title || request.id,
+        filename: request.fileName || `${request.id}.wav`,
+        size: 0,
+        downloadedAt: Date.now(),
+        status: 'handed_off'
+      });
+      emit('complete', { id: request.id, outcome: 'handed_off' });
+      return;
+    }
     const size = await runWorkerDownload(request, endpoint, active, fileHandle);
     await saveDownloadRecord({
       cid: request.id,
@@ -830,7 +805,7 @@ async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
       downloadedAt: Date.now(),
       status: 'completed'
     });
-    emit('complete', { id: request.id, browserManaged: !fileHandle, size });
+    emit('complete', { id: request.id, outcome: 'completed', size });
   } catch (error) {
     logDownloadFailure(request, endpoint, error);
     const userCancelled = error instanceof DOMException && error.name === 'AbortError';

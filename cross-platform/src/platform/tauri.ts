@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { load } from '@tauri-apps/plugin-store';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 import { defaultSettings, normalizeSettings, type AppSettings } from '../settings';
 import type { DownloadEvents, DownloadRequest, PersistedQueueState, PlatformBridge, PlatformInfo } from './types';
 
@@ -73,11 +74,17 @@ export const tauriPlatform: PlatformBridge = {
   },
 
   async selectDirectory() {
-    return null;
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: (await this.getSettings()).downloadDirectory || undefined,
+      title: '选择下载目录'
+    });
+    return typeof selected === 'string' ? selected : null;
   },
 
-  async validateDownloadDirectory() {
-    // Desktop downloads use the operating system's default Downloads folder.
+  async validateDownloadDirectory(directory) {
+    await invoke('validate_download_directory', { directory });
   },
 
   async loadOfficialCatalog() {
@@ -115,8 +122,8 @@ export const tauriPlatform: PlatformBridge = {
     return invoke<PlatformInfo>('platform_info');
   },
 
-  async recoverDownloads() {
-    await invoke('recover_downloads', { downloadDirectory: '' });
+  async recoverDownloads(downloadDirectory) {
+    await invoke('recover_downloads', { downloadDirectory });
   },
 
   async startDownload(request: DownloadRequest) {
