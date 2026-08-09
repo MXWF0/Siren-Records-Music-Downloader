@@ -9,27 +9,29 @@ function docker(...args) {
 }
 
 async function waitFor(path, attempts = 30) {
-  let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const response = await fetch(`http://127.0.0.1:4174${path}`, { cache: 'no-store' });
-      if (response.ok) return response;
-      lastError = new Error(`${path} returned HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-    }
+    const check = spawnSync('docker', [
+      'exec', container, 'node', '-e',
+      `fetch('http://127.0.0.1:4173${path}').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))`
+    ], { stdio: 'ignore' });
+    if (check.status === 0) return;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
-  throw lastError || new Error(`${path} did not become ready`);
+  throw new Error(`${path} did not become ready inside the container`);
 }
 
 try {
   docker('build', '-t', image, '.');
   docker('run', '--detach', '--name', container, '--publish', '4174:4173', image);
-  await waitFor('/api/health');
-  await waitFor('/');
-  await waitFor('/api/catalog');
-  console.log('Docker smoke checks passed: /api/health, /, /api/catalog');
+  try {
+    await waitFor('/api/health');
+    await waitFor('/');
+    await waitFor('/api/catalog');
+    console.log('Docker smoke checks passed: /api/health, /, /api/catalog');
+  } catch (error) {
+    spawnSync('docker', ['logs', container], { stdio: 'inherit' });
+    throw error;
+  }
 } finally {
   spawnSync('docker', ['rm', '--force', container], { stdio: 'ignore' });
   spawnSync('docker', ['image', 'rm', '--force', image], { stdio: 'ignore' });
