@@ -33,19 +33,32 @@ function requestOrigin(request) {
   return getHeader(request, 'origin').trim().replace(/\/+$/, '');
 }
 
+function normalizeAddress(value) {
+  return String(value || '').replace(/^::ffff:/, '').trim();
+}
+
+export function isTrustedProxy(request) {
+  if (process.env.SIREN_TRUST_PROXY === '1') return true;
+  const remote = normalizeAddress(request?.socket?.remoteAddress);
+  if (remote === '127.0.0.1' || remote === '::1') return true;
+  return new Set(parseList(process.env.SIREN_TRUSTED_PROXIES)).has(remote);
+}
+
 function requestHostOrigin(request) {
-  const host = getHeader(request, 'x-forwarded-host') || getHeader(request, 'host');
+  const trusted = isTrustedProxy(request);
+  const host = (trusted ? getHeader(request, 'x-forwarded-host') : '') || getHeader(request, 'host');
   if (!host) return '';
-  const protocol = (getHeader(request, 'x-forwarded-proto') || (request?.socket?.encrypted ? 'https' : 'http'))
+  const protocol = ((trusted ? getHeader(request, 'x-forwarded-proto') : '') || (request?.socket?.encrypted ? 'https' : 'http'))
     .split(',')[0]
     .trim();
   return `${protocol}://${host}`;
 }
 
 function clientAddress(request) {
-  const forwarded = getHeader(request, 'x-forwarded-for').split(',')[0].trim();
-  const value = forwarded || getHeader(request, 'cf-connecting-ip') || request?.socket?.remoteAddress || 'unknown';
-  return String(value).slice(0, 96);
+  const trusted = isTrustedProxy(request);
+  const forwarded = trusted ? getHeader(request, 'x-forwarded-for').split(',')[0].trim() : '';
+  const cloudflare = trusted ? getHeader(request, 'cf-connecting-ip') : '';
+  return normalizeAddress(forwarded || cloudflare || request?.socket?.remoteAddress || 'unknown').slice(0, 96);
 }
 
 function allowedOrigins() {
@@ -111,7 +124,35 @@ export function resetRateLimitsForTests() {
   rateLimitBuckets.clear();
 }
 
-export function enforceRequestPolicy(request, response, scope, { count = true } = {}) {
+async function externalRateLimit(key, limit, windowMs) {
+  const endpoint = String(process.env.SIREN_RATE_LIMIT_URL || '').trim();
+  if (!endpoint) return null;
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.SIREN_RATE_LIMIT_TOKEN ? { Authorization: `Bearer ${process.env.SIREN_RATE_LIMIT_TOKEN}` } : {})
+      },
+      body: JSON.stringify({ key, limit, windowMs }),
+      signal: AbortSignal.timeout(2_500)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    if (typeof result?.allowed !== 'boolean') throw new Error('invalid response');
+    return {
+      allowed: result.allowed,
+      limit: positiveInteger(result.limit, limit),
+      remaining: Math.max(0, Number(result.remaining) || 0),
+      resetAt: positiveInteger(result.resetAt, Date.now() + windowMs)
+    };
+  } catch (error) {
+    console.warn('[SirenRecords] external rate limiter unavailable; using local fallback', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+export async function enforceRequestPolicy(request, response, scope, { count = true } = {}) {
   if (!isOriginAllowed(request)) {
     sendJson(response, 403, { error: '当前网站没有权限使用此下载接口' }, request);
     return false;
@@ -122,7 +163,8 @@ export function enforceRequestPolicy(request, response, scope, { count = true } 
   const limit = scope === 'audio'
     ? positiveInteger(process.env.SIREN_AUDIO_RATE_LIMIT, 8)
     : positiveInteger(process.env.SIREN_CATALOG_RATE_LIMIT, 60);
-  const rate = consumeRateLimit(`${scope}:${clientAddress(request)}`, limit, windowMs);
+  const key = `${scope}:${clientAddress(request)}`;
+  const rate = await externalRateLimit(key, limit, windowMs) || consumeRateLimit(key, limit, windowMs);
   response.setHeader('X-RateLimit-Limit', String(rate.limit));
   response.setHeader('X-RateLimit-Remaining', String(rate.remaining));
   response.setHeader('X-RateLimit-Reset', String(Math.ceil(rate.resetAt / 1000)));

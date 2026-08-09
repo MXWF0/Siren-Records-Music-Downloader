@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { createQueueStore } from '../src/stores/queue';
 import type { Song } from '../src/catalog';
 import type { PlatformBridge } from '../src/platform/types';
+import { defaultSettings } from '../src/settings';
 
 const songs: Song[] = [
   { cid: '1', name: '第一首', albumCid: 'a', albumName: '专辑 A' },
@@ -29,7 +30,7 @@ describe('queue store', () => {
     retryStore.enqueue(songs[0]);
     retryStore.items.value[0].state = 'failed';
     retryStore.items.value[0].message = '网络错误';
-    await retryStore.retry('1', { schemaVersion: 2, separateDirectory: true, groupByDownload: true, concurrentDownloads: 2 });
+    await retryStore.retry('1', defaultSettings);
     expect(retryStore.active.value).toHaveLength(1);
   });
 
@@ -46,10 +47,27 @@ describe('queue store', () => {
     };
     const store = createQueueStore(platform, ref(new Set<string>()), () => {});
     store.enqueue(songs[0]);
-    await store.runNext({ schemaVersion: 2, separateDirectory: false, groupByDownload: true, concurrentDownloads: 2 });
+    await store.runNext({ ...defaultSettings, separateDirectory: false });
     expect(requestId).toBe('1');
     expect(requestKeys).not.toContain('sourceUrl');
     expect(store.active.value).toHaveLength(1);
+  });
+
+  it('does not count a browser handoff as a confirmed completed file', async () => {
+    let events: Parameters<PlatformBridge['listenDownloadEvents']>[0] | undefined;
+    const completed: string[] = [];
+    const platform: PlatformBridge = {
+      ...webPreviewPlatform,
+      startDownload: async () => ({ started: true }),
+      listenDownloadEvents: async (value) => { events = value; return () => {}; }
+    };
+    const store = createQueueStore(platform, ref(new Set<string>()), (id) => completed.push(id));
+    await store.connect();
+    store.enqueue(songs[0]);
+    await store.runNext(defaultSettings);
+    events?.complete({ id: '1', outcome: 'handed_off' });
+    expect(store.handedOff.value.map((item) => item.id)).toEqual(['1']);
+    expect(completed).toEqual([]);
   });
 
   it('marks a task failed when a platform declines to start it', async () => {
@@ -59,7 +77,7 @@ describe('queue store', () => {
     };
     const store = createQueueStore(platform, ref(new Set<string>()), () => {});
     store.enqueue(songs[0]);
-    await store.runNext({ schemaVersion: 2, separateDirectory: false, groupByDownload: true, concurrentDownloads: 2 });
+    await store.runNext({ ...defaultSettings, separateDirectory: false });
     expect(store.failed.value[0]?.message).toBe('下载任务未能启动');
   });
 
@@ -74,7 +92,7 @@ describe('queue store', () => {
     };
     const store = createQueueStore(platform, ref(new Set<string>()), () => {});
     store.enqueueMany([...songs, { cid: '3', name: '第三首', albumCid: 'b', albumName: '专辑 B' }]);
-    await store.runNext({ schemaVersion: 2, separateDirectory: false, groupByDownload: true, concurrentDownloads: 2 });
+    await store.runNext({ ...defaultSettings, separateDirectory: false });
     expect(started).toEqual(['1', '2']);
     expect(store.active.value).toHaveLength(2);
     expect(store.pending.value.map((item) => item.id)).toEqual(['3']);
@@ -107,7 +125,7 @@ describe('queue store', () => {
 
 const webPreviewPlatform: PlatformBridge = {
   kind: 'web',
-  getSettings: async () => ({ schemaVersion: 2, separateDirectory: true, groupByDownload: true, concurrentDownloads: 2 }),
+  getSettings: async () => defaultSettings,
   saveSettings: async () => {},
   selectDirectory: async () => null,
   validateDownloadDirectory: async () => {},

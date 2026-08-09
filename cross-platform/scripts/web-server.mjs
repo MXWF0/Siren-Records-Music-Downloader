@@ -1,6 +1,5 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { Readable } from 'node:stream';
 import { extname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -16,6 +15,7 @@ import {
   validRangeHeader,
   validSongId
 } from './official-proxy.mjs';
+import { pipeLimitedResponse } from './proxy-stream.mjs';
 
 const scriptDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const projectDirectory = resolve(scriptDirectory, '..');
@@ -34,13 +34,23 @@ const contentTypes = {
   '.woff2': 'font/woff2'
 };
 
-function endPreflight(request, response, scope) {
-  if (!enforceRequestPolicy(request, response, scope, { count: false })) return;
+function handleHealth(response, headOnly) {
+  const body = JSON.stringify({ status: 'ok', service: 'siren-records-web' });
+  response.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store'
+  });
+  response.end(headOnly ? undefined : body);
+}
+
+async function endPreflight(request, response, scope) {
+  if (!await enforceRequestPolicy(request, response, scope, { count: false })) return;
   response.writeHead(204, corsHeaders(request)).end();
 }
 
 async function handleCatalog(request, response, headOnly) {
-  if (!enforceRequestPolicy(request, response, 'catalog', { count: !headOnly })) return;
+  if (!await enforceRequestPolicy(request, response, 'catalog', { count: !headOnly })) return;
   try {
     const payload = await getCatalog();
     response.writeHead(200, {
@@ -51,13 +61,13 @@ async function handleCatalog(request, response, headOnly) {
     response.end(headOnly ? undefined : JSON.stringify(payload));
   } catch (error) {
     if (response.destroyed) return;
-    const reason = error instanceof Error ? error.message : '未知网络错误';
-    sendJson(response, 502, { error: `无法获取官网目录：${reason}` }, request);
+    console.error('[SirenRecords] catalog proxy failed', error);
+    sendJson(response, 502, { error: '官网目录暂时不可用，请稍后重试' }, request);
   }
 }
 
 async function handleAudio(request, response, rawId) {
-  if (!enforceRequestPolicy(request, response, 'audio')) return;
+  if (!await enforceRequestPolicy(request, response, 'audio')) return;
   let id;
   try {
     id = decodeURIComponent(rawId);
@@ -101,22 +111,20 @@ async function handleAudio(request, response, rawId) {
       'Cache-Control': 'no-store',
       ...corsHeaders(request)
     });
-    const stream = Readable.fromWeb(upstream.body);
-    response.on('close', () => stream.destroy());
-    stream.on('error', () => response.destroy());
-    stream.pipe(response);
+    const maxBytes = Number.parseInt(process.env.SIREN_MAX_AUDIO_BYTES || '', 10) || 1024 * 1024 * 1024;
+    await pipeLimitedResponse(upstream.body, response, maxBytes);
   } catch (error) {
     if (response.destroyed || response.headersSent) {
       response.destroy();
       return;
     }
-    const reason = error instanceof Error ? error.message : '未知网络错误';
-    sendJson(response, 502, { error: `下载服务暂时不可用：${reason}` }, request);
+    console.error('[SirenRecords] audio proxy failed', error);
+    sendJson(response, 502, { error: '音频下载服务暂时不可用，请稍后重试' }, request);
   }
 }
 
 async function handleSong(request, response, id) {
-  if (!enforceRequestPolicy(request, response, 'catalog')) return;
+  if (!await enforceRequestPolicy(request, response, 'catalog')) return;
   if (!validSongId(id)) {
     sendJson(response, 400, { error: '歌曲编号无效' }, request);
     return;
@@ -124,8 +132,8 @@ async function handleSong(request, response, id) {
   try {
     sendJson(response, 200, { data: await fetchOfficialSong(id) }, request);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : '未知网络错误';
-    sendJson(response, 502, { error: `无法获取歌曲详情：${reason}` }, request);
+    console.error('[SirenRecords] song proxy failed', error);
+    sendJson(response, 502, { error: '歌曲详情暂时不可用，请稍后重试' }, request);
   }
 }
 
@@ -150,7 +158,10 @@ async function serveStatic(response, pathname, headOnly) {
       'Content-Type': type,
       'Content-Length': metadata.size,
       'Cache-Control': 'public, max-age=3600',
-      'X-Content-Type-Options': 'nosniff'
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hycdn.cn; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
     });
     if (headOnly) response.end();
     else response.end(await readFile(filePath));
@@ -166,13 +177,18 @@ const server = createServer(async (request, response) => {
   const audioRoute = url.pathname === '/api/audio' || url.pathname.startsWith('/api/audio/');
   const catalogRoute = url.pathname === '/api/catalog';
   const songRoute = url.pathname === '/api/song';
+  const healthRoute = url.pathname === '/api/health';
 
   if (method === 'OPTIONS' && (audioRoute || catalogRoute || songRoute)) {
-    endPreflight(request, response, audioRoute ? 'audio' : 'catalog');
+    await endPreflight(request, response, audioRoute ? 'audio' : 'catalog');
     return;
   }
   if (method !== 'GET' && method !== 'HEAD') {
     response.writeHead(405, { Allow: 'GET, HEAD, OPTIONS', ...corsHeaders(request) }).end();
+    return;
+  }
+  if (healthRoute) {
+    handleHealth(response, method === 'HEAD');
     return;
   }
   if (catalogRoute) {

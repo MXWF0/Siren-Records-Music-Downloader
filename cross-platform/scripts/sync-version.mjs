@@ -27,7 +27,7 @@ const updates = [
   },
   {
     path: resolve(root, 'README.md'),
-    transform: (text) => text.replace(/(<!-- app-version:start -->)v[^<]+(<!-- app-version:end -->)/, `$1v${version.replace(/\.0$/, '')}$2`)
+    transform: (text) => text.replace(/(<!-- app-version:start -->)v[^<]+(<!-- app-version:end -->)/, `$1v${version}$2`)
   }
 ];
 

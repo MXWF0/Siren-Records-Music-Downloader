@@ -2,16 +2,14 @@
  * Web download worker.
  *
  * The worker owns the network request and reports small progress messages to
- * the Vue thread.  Stream mode transfers each response chunk to the caller;
- * blob mode is kept as a compatibility fallback for browsers without the File
- * System Access API.
+ * the Vue thread. Each response chunk is transferred to the main thread, which
+ * owns the permission-gated FileSystemWritableFileStream.
  */
 
 interface StartMessage {
   type: 'start';
   requestId: string;
   endpoint: string;
-  mode: 'stream' | 'blob';
   range?: string;
 }
 
@@ -39,14 +37,6 @@ interface ChunkMessage {
   total: number | null;
 }
 
-interface BlobMessage {
-  type: 'blob';
-  requestId: string;
-  blob: Blob;
-  loaded: number;
-  total: number | null;
-}
-
 interface ProgressMessage {
   type: 'progress';
   requestId: string;
@@ -68,7 +58,7 @@ interface ReadyMessage {
   type: 'ready';
 }
 
-type WorkerResponse = ReadyMessage | ResponseMessage | ChunkMessage | BlobMessage | ProgressMessage | TerminalMessage;
+type WorkerResponse = ReadyMessage | ResponseMessage | ChunkMessage | ProgressMessage | TerminalMessage;
 
 interface WorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<WorkerRequest>) => void): void;
@@ -87,7 +77,6 @@ function isWorkerRequest(value: unknown): value is WorkerRequest {
   if (value.type === 'cancel') return true;
   return value.type === 'start'
     && typeof value.endpoint === 'string'
-    && (value.mode === 'stream' || value.mode === 'blob')
     && (value.range === undefined || typeof value.range === 'string');
 }
 
@@ -178,15 +167,6 @@ async function runDownload(message: StartMessage) {
       contentLength: total,
       contentDisposition: response.headers.get('content-disposition') || ''
     });
-
-    if (message.mode === 'blob') {
-      if (!response.body) throw new Error('浏览器无法读取音频响应流');
-      const blob = await response.blob();
-      if (controller.signal.aborted) throw new DOMException('下载已取消', 'AbortError');
-      post({ type: 'blob', requestId: message.requestId, blob, loaded: blob.size, total: total ?? blob.size });
-      post({ type: 'complete', requestId: message.requestId });
-      return;
-    }
 
     const reader = response.body?.getReader();
     if (!reader) throw new Error('浏览器无法读取音频响应流');

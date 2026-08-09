@@ -8,6 +8,7 @@ import {
   fetchOfficialAudio,
   fetchOfficialSong,
   isOriginAllowed,
+  isTrustedProxy,
   resetRateLimitsForTests,
   validRangeHeader,
   validSongId
@@ -39,6 +40,13 @@ describe('proxy request policy', () => {
     expect(isOriginAllowed(request('https://third-party.example'))).toBe(false);
     expect(isOriginAllowed(request('null'))).toBe(false);
     expect(corsHeaders(request('https://third-party.example'))['Access-Control-Allow-Origin']).toBeUndefined();
+  });
+
+  it('does not trust forwarded host data from unconfigured peers', () => {
+    const untrusted = request('https://api.example');
+    untrusted.socket.remoteAddress = '203.0.113.8';
+    expect(isTrustedProxy(untrusted)).toBe(false);
+    expect(isOriginAllowed(untrusted)).toBe(false);
   });
 
   it('limits repeated requests within one window', () => {

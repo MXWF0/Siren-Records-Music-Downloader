@@ -53,7 +53,12 @@ export interface PersistedQueueState {
 
 export interface DownloadEvents {
   progress(value: DownloadProgress): void;
-  complete(value: { id: string; browserManaged?: boolean; size?: number }): void;
+  complete(value: {
+    id: string;
+    /** `completed` means the application confirmed the final file write. */
+    outcome?: 'completed' | 'handed_off';
+    size?: number;
+  }): void;
   failed(value: DownloadFailure): void;
   cancelled(value: { id: string }): void;
 }

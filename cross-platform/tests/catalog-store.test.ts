@@ -23,5 +23,17 @@ describe('catalog store search', () => {
     expect(store.matchCount.value).toBe(1);
     store.filter.value = 'downloaded';
     expect(store.visibleSongs.value).toHaveLength(0);
+    expect(store.downloadedCount.value).toBe(1);
+  });
+
+  it('counts only downloaded CIDs that still exist in the official catalogue', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => JSON.stringify(['2', 'removed']), setItem: vi.fn() });
+    vi.stubGlobal('window', { setTimeout, clearTimeout });
+    const store = createCatalogStore(async () => ({
+      albums: { data: [{ cid: 'a', name: 'Album A' }] },
+      songs: { data: { list: [{ cid: '2', name: 'Track', albumCid: 'a' }] } }
+    }));
+    await store.load();
+    expect(store.downloadedCount.value).toBe(1);
   });
 });

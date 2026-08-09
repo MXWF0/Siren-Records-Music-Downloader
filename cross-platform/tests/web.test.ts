@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  canUseFileSystemStream,
   friendlyDownloadError,
+  handOffBrowserManagedDownload,
   normalizeApiBase,
   resolveApiUrl,
   resolveDownloadProxy,
+  rangeHeaderForOffset,
   resolveWorkerAssetUrl,
   webPlatform
 } from '../src/platform/web';
@@ -52,6 +55,28 @@ describe('web download errors', () => {
     expect(resolveApiUrl('/api/audio?id=42', 'https://proxy.example/')).toBe('https://proxy.example/api/audio?id=42');
     expect(normalizeApiBase('javascript:alert(1)')).toBe('');
     expect(normalizeApiBase('not a URL')).toBe('');
+  });
+
+  it('uses File System Access only with an active user gesture', () => {
+    expect(canUseFileSystemStream(true, true)).toBe(true);
+    expect(canUseFileSystemStream(true, false)).toBe(false);
+    expect(canUseFileSystemStream(false, true)).toBe(false);
+  });
+
+  it('hands unsupported browsers a direct proxy response without building a Blob', () => {
+    const click = vi.fn();
+    const anchor = { href: '', download: '', rel: '', referrerPolicy: '', style: {}, click, remove: vi.fn() };
+    vi.stubGlobal('document', { createElement: () => anchor, body: { append: vi.fn() } });
+    handOffBrowserManagedDownload('/api/audio?id=42', 'Track.wav');
+    expect(anchor.href).toBe('/api/audio?id=42');
+    expect(anchor.download).toBe('Track.wav');
+    expect(click).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('creates a single Range header for worker recovery', () => {
+    expect(rangeHeaderForOffset(4096)).toBe('bytes=4096-');
+    expect(rangeHeaderForOffset(0)).toBeUndefined();
   });
 
   it('keeps the repository base path when resolving a hashed Worker asset', () => {
