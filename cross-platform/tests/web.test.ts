@@ -3,17 +3,24 @@ import {
   canUseFileSystemStream,
   friendlyDownloadError,
   handOffBrowserManagedDownload,
+  isCompleteDownloadSize,
   normalizeApiBase,
   resolveApiUrl,
   resolveDownloadProxy,
   rangeHeaderForOffset,
+  responseFileName,
   resolveWorkerAssetUrl,
+  shouldReplaceDownloadRecord,
+  webDownloadConcurrency,
   webPlatform
 } from '../src/platform/web';
 
 describe('web download errors', () => {
   it('allows the queue to use the configured worker concurrency range', () => {
-    expect(webPlatform.maxConcurrentDownloads).toBe(3);
+    expect(webDownloadConcurrency(true, false)).toBe(3);
+    expect(webDownloadConcurrency(false, true)).toBe(3);
+    expect(webDownloadConcurrency(false, false)).toBe(1);
+    expect(webPlatform.maxConcurrentDownloads).toBe(1);
   });
 
   it('explains rejected origins without exposing backend details', () => {
@@ -57,6 +64,15 @@ describe('web download errors', () => {
     expect(normalizeApiBase('not a URL')).toBe('');
   });
 
+  it('uses the proxy filename and keeps the official response extension', () => {
+    expect(responseFileName(
+      "attachment; filename=42.wav; filename*=UTF-8''%5BAlbum%5D%20Track.flac",
+      'audio/flac',
+      '[Album] Track.wav'
+    )).toBe('[Album] Track.flac');
+    expect(responseFileName('', 'audio/mpeg', '[Album] Track.wav')).toBe('[Album] Track.mp3');
+  });
+
   it('uses File System Access only with an active user gesture', () => {
     expect(canUseFileSystemStream(true, true)).toBe(true);
     expect(canUseFileSystemStream(true, false)).toBe(false);
@@ -77,6 +93,22 @@ describe('web download errors', () => {
   it('creates a single Range header for worker recovery', () => {
     expect(rangeHeaderForOffset(4096)).toBe('bytes=4096-');
     expect(rangeHeaderForOffset(0)).toBeUndefined();
+  });
+
+  it('rejects a truncated stream when Content-Length is known', () => {
+    expect(isCompleteDownloadSize(1024, 1024)).toBe(true);
+    expect(isCompleteDownloadSize(900, 1024)).toBe(false);
+    expect(isCompleteDownloadSize(900, null)).toBe(true);
+  });
+
+  it('does not downgrade a confirmed download when a retry fails or is handed off', () => {
+    const completed = {
+      cid: '42', name: 'Track', filename: 'Track.wav', size: 1024,
+      downloadedAt: 1, status: 'completed' as const
+    };
+    expect(shouldReplaceDownloadRecord(completed, { ...completed, status: 'failed' })).toBe(false);
+    expect(shouldReplaceDownloadRecord(completed, { ...completed, status: 'handed_off' })).toBe(false);
+    expect(shouldReplaceDownloadRecord({ ...completed, status: 'failed' }, completed)).toBe(true);
   });
 
   it('keeps the repository base path when resolving a hashed Worker asset', () => {

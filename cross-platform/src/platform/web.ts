@@ -36,12 +36,20 @@ interface FileHandleLike {
   createWritable(): Promise<FileWritableLike>;
 }
 
+interface DirectoryHandleLike {
+  getDirectoryHandle(name: string, options: { create: boolean }): Promise<DirectoryHandleLike>;
+  getFileHandle(name: string, options: { create: boolean }): Promise<FileHandleLike>;
+  queryPermission?(options: { mode: 'readwrite' }): Promise<PermissionState>;
+  requestPermission?(options: { mode: 'readwrite' }): Promise<PermissionState>;
+}
+
 interface SavePickerWindow extends Window {
   showSaveFilePicker?: (options?: {
     suggestedName?: string;
     types?: Array<{ description?: string; accept: Record<string, string[]> }>;
     excludeAcceptAllOption?: boolean;
   }) => Promise<FileHandleLike>;
+  showDirectoryPicker?: (options?: { mode?: 'readwrite' }) => Promise<DirectoryHandleLike>;
 }
 
 interface DownloadWorkerStart {
@@ -53,6 +61,11 @@ interface DownloadWorkerStart {
 
 interface DownloadWorkerCancel {
   type: 'cancel';
+  requestId: string;
+}
+
+interface DownloadWorkerChunkAck {
+  type: 'chunk-ack';
   requestId: string;
 }
 
@@ -92,6 +105,7 @@ interface DownloadWorkerTerminal {
   errorStack?: string;
   loaded?: number;
   total?: number | null;
+  retryAfterSeconds?: number;
 }
 
 type DownloadWorkerMessage = DownloadWorkerReady | DownloadWorkerResponse | DownloadWorkerChunk | DownloadWorkerProgress | DownloadWorkerTerminal;
@@ -104,6 +118,8 @@ interface ActiveDownload {
 
 const activeDownloads = new Map<string, ActiveDownload>();
 let savePickerAttempted = false;
+let downloadDirectoryHandle: DirectoryHandleLike | null = null;
+let directorySelectionPromise: Promise<DirectoryHandleLike | null> | null = null;
 const bundledCatalogPayload = bundledCatalog as { albums: unknown; songs: unknown };
 
 export interface WebDownloadRecord {
@@ -238,15 +254,29 @@ async function saveDownloadRecord(record: WebDownloadRecord): Promise<void> {
   }
   await new Promise<void>((resolve) => {
     try {
-      const request = database.transaction(downloadsStoreName, 'readwrite')
-        .objectStore(downloadsStoreName)
-        .put(record);
-      request.onsuccess = () => resolve();
-      request.onerror = () => resolve();
+      const transaction = database.transaction(downloadsStoreName, 'readwrite');
+      const store = transaction.objectStore(downloadsStoreName);
+      const request = store.get(record.cid);
+      request.onsuccess = () => {
+        const existing = request.result as WebDownloadRecord | undefined;
+        // A failed retry or browser handoff must not erase an earlier file
+        // whose write was already confirmed by the application.
+        if (shouldReplaceDownloadRecord(existing, record)) store.put(record);
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => resolve();
+      transaction.onabort = () => resolve();
     } catch {
       resolve();
     }
   });
+}
+
+export function shouldReplaceDownloadRecord(
+  existing: WebDownloadRecord | undefined,
+  incoming: WebDownloadRecord
+) {
+  return incoming.status === 'completed' || existing?.status !== 'completed';
 }
 
 async function migrateLegacyDownloadIds(records: WebDownloadRecord[]) {
@@ -403,6 +433,15 @@ function hasUserActivation() {
   return Boolean(navigator.userActivation?.isActive);
 }
 
+function directoryPickerIsAvailable() {
+  if (typeof window === 'undefined') return false;
+  return typeof (window as SavePickerWindow).showDirectoryPicker === 'function';
+}
+
+export function webDownloadConcurrency(savePicker: boolean, directoryPicker: boolean) {
+  return savePicker || directoryPicker ? 3 : 1;
+}
+
 export function canUseFileSystemStream(
   pickerAvailable = pickerIsAvailable(),
   userActivated = hasUserActivation()
@@ -414,7 +453,84 @@ export function rangeHeaderForOffset(offset: number) {
   return Number.isSafeInteger(offset) && offset > 0 ? `bytes=${offset}-` : undefined;
 }
 
+async function directoryFileHandle(request: DownloadRequest): Promise<FileHandleLike | null> {
+  if (!downloadDirectoryHandle) return null;
+  let directory = downloadDirectoryHandle;
+  if (request.separateDirectory) {
+    const album = safePathPart((request.fileName || '').match(/^\[([^\]]+)\]/)?.[1], '塞壬唱片');
+    directory = await directory.getDirectoryHandle(album, { create: true });
+  }
+  // Delay file creation until the worker has received Content-Disposition.
+  // This keeps the directory permission while allowing the proxy to replace
+  // the provisional `.wav` extension with the official audio format.
+  return {
+    async createWritable() {
+      const file = await directory.getFileHandle(
+        safePathPart(request.fileName, `${request.id}.audio`),
+        { create: true }
+      );
+      return file.createWritable();
+    }
+  };
+}
+
+function safePathPart(value: string | undefined, fallback: string) {
+  const cleaned = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned.slice(0, 120) || fallback;
+}
+
+export function responseFileName(contentDisposition: string, contentType: string, fallback: string) {
+  const encoded = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const plain = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1];
+  let headerName = plain || '';
+  if (encoded) {
+    try { headerName = decodeURIComponent(encoded); } catch { /* keep ASCII fallback */ }
+  }
+  const extension = contentType.toLowerCase().includes('flac') ? 'flac'
+    : contentType.toLowerCase().includes('mpeg') ? 'mp3'
+      : contentType.toLowerCase().includes('ogg') ? 'ogg'
+        : contentType.toLowerCase().includes('mp4') ? 'm4a'
+          : contentType.toLowerCase().includes('wav') ? 'wav' : '';
+  const selected = safePathPart(headerName, safePathPart(fallback, 'audio'));
+  if (!extension) return selected;
+  return `${selected.replace(/\.[a-z0-9]{2,5}$/i, '')}.${extension}`;
+}
+
 async function requestSaveFileHandle(request: DownloadRequest): Promise<FileHandleLike | null> {
+  if (downloadDirectoryHandle) {
+    try {
+      const permission = await downloadDirectoryHandle.queryPermission?.({ mode: 'readwrite' });
+      if (permission === 'granted' || !downloadDirectoryHandle.queryPermission) {
+        return await directoryFileHandle(request);
+      }
+      downloadDirectoryHandle = null;
+    } catch {
+      downloadDirectoryHandle = null;
+    }
+  }
+  if (directorySelectionPromise) {
+    downloadDirectoryHandle = await directorySelectionPromise;
+    return directoryFileHandle(request);
+  }
+  // Choosing a directory once gives Chrome and Edge a stable batch-download
+  // experience and preserves stream-to-disk writes for every queued track.
+  if (directoryPickerIsAvailable() && hasUserActivation()) {
+    savePickerAttempted = true;
+    try {
+      const picker = (window as SavePickerWindow).showDirectoryPicker;
+      directorySelectionPromise = picker?.({ mode: 'readwrite' }) || Promise.resolve(null);
+      downloadDirectoryHandle = await directorySelectionPromise;
+      return await directoryFileHandle(request);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        savePickerAttempted = false;
+        throw error;
+      }
+      downloadDirectoryHandle = null;
+    } finally {
+      directorySelectionPromise = null;
+    }
+  }
   // A picker is a permission-gated operation. Only ask during the first user
   // gesture; queued songs afterwards use the browser download manager without
   // prompting for every item.
@@ -433,7 +549,10 @@ async function requestSaveFileHandle(request: DownloadRequest): Promise<FileHand
   } catch (error) {
     // Explicit cancellation should be visible in the queue instead of silently
     // starting a second download through a different destination.
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      savePickerAttempted = false;
+      throw error;
+    }
     return null;
   }
 }
@@ -516,6 +635,11 @@ async function runMainThreadFallback(
   const contentLength = Number(response.headers.get('content-length'));
   const total = Number.isFinite(contentLength) && contentLength >= 0 ? contentLength : null;
   const startedAt = performance.now();
+  request.fileName = responseFileName(
+    response.headers.get('content-disposition') || '',
+    response.headers.get('content-type') || '',
+    request.fileName || `${request.id}.audio`
+  );
   const writer = await fileHandle.createWritable();
   try {
     const reader = response.body?.getReader();
@@ -530,12 +654,19 @@ async function runMainThreadFallback(
       loaded += result.value.byteLength;
       emitProgress(request.id, loaded, total, startedAt);
     }
+    if (!isCompleteDownloadSize(loaded, total)) {
+      throw new Error(`音频下载不完整：应为 ${total} 字节，实际为 ${loaded} 字节`);
+    }
     await writer.close();
     return loaded;
   } catch (error) {
     if (writer.abort) await writer.abort(error).catch(() => undefined);
     throw error;
   }
+}
+
+export function isCompleteDownloadSize(loaded: number, total: number | null) {
+  return total === null || loaded === total;
 }
 
 async function runWorkerDownload(
@@ -588,24 +719,14 @@ async function runWorkerDownload(
   worker.addEventListener('messageerror', onBootstrapMessageError);
 
   let writer: FileWritableLike | null = null;
-  try {
-    writer = await fileHandle.createWritable();
-  } catch (error) {
-    worker.removeEventListener('error', onBootstrapError);
-    worker.removeEventListener('messageerror', onBootstrapMessageError);
-    worker.terminate();
-    throw error;
-  }
   worker.removeEventListener('error', onBootstrapError);
   worker.removeEventListener('messageerror', onBootstrapMessageError);
   if (bootstrapError) {
     worker.terminate();
-    if (writer?.abort) await writer.abort(bootstrapError).catch(() => undefined);
     throw bootstrapError;
   }
   if (active.controller.signal.aborted) {
     worker.terminate();
-    if (writer?.abort) await writer.abort(cancelledError()).catch(() => undefined);
     throw cancelledError();
   }
   active.worker = worker;
@@ -648,7 +769,7 @@ async function runWorkerDownload(
         reject(normalized);
       });
     };
-    const postWorker = (message: DownloadWorkerStart | DownloadWorkerCancel) => {
+    const postWorker = (message: DownloadWorkerStart | DownloadWorkerCancel | DownloadWorkerChunkAck) => {
       try {
         worker.postMessage(message);
         return true;
@@ -678,6 +799,14 @@ async function runWorkerDownload(
         lastTotal = resumeOffset > 0
           ? (resumeTotal ?? (message.contentLength === null ? null : resumeOffset + message.contentLength))
           : message.contentLength;
+        request.fileName = responseFileName(
+          message.contentDisposition,
+          message.contentType,
+          request.fileName || `${request.id}.audio`
+        );
+        writeChain = writeChain.then(async () => {
+          writer ??= await fileHandle.createWritable();
+        }).catch(fail);
         return;
       }
       if (message.type === 'chunk') {
@@ -685,13 +814,19 @@ async function runWorkerDownload(
         lastTotal = resumeOffset > 0
           ? (resumeTotal ?? (message.total === null ? null : resumeOffset + message.total))
           : message.total;
-        if (!writer) return fail(new Error('浏览器不支持流式文件写入'));
         writeChain = writeChain
-          .then(() => writer.write(message.buffer))
-          .then(() => emitProgress(request.id, lastLoaded, lastTotal, startedAt))
+          .then(async () => {
+            writer ??= await fileHandle.createWritable();
+            await writer.write(message.buffer);
+          })
+          .then(() => {
+            emitProgress(request.id, lastLoaded, lastTotal, startedAt);
+            if (!postWorker({ type: 'chunk-ack', requestId } satisfies DownloadWorkerChunkAck)) {
+              throw new Error('无法确认文件写入进度');
+            }
+          })
           .catch((error) => {
             fail(error);
-            throw error;
           });
         return;
       }
@@ -706,12 +841,15 @@ async function runWorkerDownload(
       if (message.type === 'cancelled') return fail(cancelledError());
       if (message.type === 'failed') {
         const currentLoaded = resumeOffset + (message.loaded || 0);
-        if (fileHandle && writer?.seek && !resumeAttempted && currentLoaded > 0 && !active.controller.signal.aborted) {
+        if (fileHandle && !resumeAttempted && currentLoaded > 0 && !active.controller.signal.aborted) {
           resumeAttempted = true;
           resumeOffset = currentLoaded;
           resumeTotal = lastTotal ?? message.total ?? null;
           writeChain = writeChain
-            .then(() => writer.seek!(resumeOffset))
+            .then(async () => {
+              if (!writer?.seek) throw new Error('当前浏览器不支持断点续传写入');
+              await writer.seek(resumeOffset);
+            })
             .then(() => {
               if (!settled) postWorker({
                 type: 'start', requestId, endpoint,
@@ -721,9 +859,10 @@ async function runWorkerDownload(
             .catch((error) => { fail(error); });
           return;
         }
-        const failure = new Error(message.message || '下载失败');
+        const failure = new Error(message.message || '下载失败') as Error & { retryAfterSeconds?: number };
         if (message.errorName) failure.name = message.errorName;
         if (message.errorStack) failure.stack = message.errorStack;
+        if (message.retryAfterSeconds) failure.retryAfterSeconds = message.retryAfterSeconds;
         return fail(failure);
       }
       if (message.type === 'complete') return finish();
@@ -828,7 +967,12 @@ async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
         downloadedAt: Date.now(),
         status: 'failed'
       });
-      emit('failed', { id: request.id, message: friendlyDownloadError(error, staticFileMode) });
+      const retryAfterSeconds = Number((error as { retryAfterSeconds?: unknown })?.retryAfterSeconds);
+      emit('failed', {
+        id: request.id,
+        message: friendlyDownloadError(error, staticFileMode),
+        ...(Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? { retryAfterSeconds } : {})
+      });
     }
   } finally {
     activeDownloads.delete(request.id);
@@ -839,7 +983,9 @@ export const webPlatform: PlatformBridge = {
   kind: 'web',
   // The worker keeps network work off the Vue thread. The queue still caps the
   // default at two and lets the user choose one to three concurrent tasks.
-  maxConcurrentDownloads: 3,
+  get maxConcurrentDownloads() {
+    return webDownloadConcurrency(pickerIsAvailable(), directoryPickerIsAvailable());
+  },
 
   async getSettings() {
     try { return readStoredSettings(); } catch { return { ...browserDefaults }; }

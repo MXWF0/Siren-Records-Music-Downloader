@@ -435,6 +435,10 @@ main { padding: 30px; }
 .queue-progress span { display: block; height: 100%; background: var(--siren-blue); border-radius: inherit; transition: width 200ms ease; }
 .queue-cancel { color: #8e5c64; background: transparent; border: 0; cursor: pointer; font-size: 11px; }
 .queue-cancel:hover { color: var(--danger); }
+.queue-batch-action { justify-self: start; padding: 2px 0; color: var(--siren-blue); background: transparent; border: 0; cursor: pointer; font-size: 11px; }
+.queue-batch-action:hover { text-decoration: underline; }
+.status-indicator.offline { background: var(--danger); box-shadow: 0 0 0 4px rgba(196, 59, 77, .1); }
+.detail-download-action { align-self: flex-start; margin-top: 7px; }
 .failed-item { background: #fff8f8; border-color: #efd9dc; }
 .completed-item { background: #f4fbf7; border-color: #d8ece1; }
 .completed-item > small { color: var(--success); }
@@ -474,6 +478,7 @@ main { padding: 30px; }
   .song-row { grid-template-columns: 27px minmax(150px, 1fr) auto; gap: 9px; padding-inline: 11px; }
   .song-album, .song-row time { display: none; }
   .song-actions { grid-column: 3; grid-row: 1; }
+  .song-actions button { min-height: 40px; padding-inline: 12px; }
 }
 
 @media (max-width: 620px) {
@@ -485,10 +490,16 @@ main { padding: 30px; }
   .titlebar-nav { justify-self: end; margin: 0; }
   .titlebar-nav button { min-width: 42px; padding-inline: 5px; font-size: 10px; }
   .stage-two-main { min-height: calc(100vh - 118px); padding: 22px 14px 118px; }
-  .stage-two-footer { right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); left: 10px; align-items: flex-start; flex-direction: column; gap: 6px; padding: 10px 13px; border-radius: 12px; }
-  .footer-actions { width: 100%; justify-content: space-between; }
-  .footer-download { width: 100%; grid-template-columns: 7px minmax(80px, 1fr) 90px auto; }
-  .footer-download small { display: none; }
+  .stage-two-footer { right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); left: 8px; align-items: stretch; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 16px; }
+  .footer-actions { width: 100%; justify-content: flex-end; }
+  .footer-download { width: 100%; grid-template-columns: 7px minmax(0, 1fr) auto; gap: 7px 9px; }
+  .footer-progress { grid-column: 2 / -1; grid-row: 2; }
+  .footer-download strong { justify-self: end; }
+  .footer-download small { grid-column: 2 / -1; display: block; }
+  .queue-launcher, .footer-link { min-height: 44px; padding-inline: 13px; }
+  .song-row { grid-template-columns: 24px minmax(0, 1fr); gap: 8px; padding: 10px; }
+  .song-actions { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; gap: 6px; }
+  .song-actions button { min-width: 0; min-height: 44px; padding: 0 7px; white-space: nowrap; }
   .library-hero, .subpage-heading, .about-hero { align-items: flex-start; flex-direction: column; }
   .library-display-options { grid-template-columns: 1fr; gap: 4px; }
   .library-hero { gap: 14px; }
@@ -497,9 +508,14 @@ main { padding: 30px; }
   .large-card, .about-card { padding: 20px; }
   .about-disc { width: 88px; height: 88px; font-size: 12px; }
   .queue-drawer { width: 100%; }
-  .detail-modal { grid-template-columns: 1fr; width: min(420px, 100%); }
+  .detail-modal { grid-template-columns: 1fr; width: min(420px, 100%); max-height: calc(100dvh - 24px); overflow-y: auto; }
   .detail-cover { width: 150px; }
   .back-to-top { right: 16px; bottom: calc(112px + env(safe-area-inset-bottom)); width: 40px; height: 40px; }
+}
+
+@media (pointer: coarse) {
+  button, select { min-height: 44px; }
+  .drawer-close { min-width: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

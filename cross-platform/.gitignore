@@ -7,3 +7,5 @@ src-tauri/gen/
 
 
 .vercel
+test-results/
+playwright-report/

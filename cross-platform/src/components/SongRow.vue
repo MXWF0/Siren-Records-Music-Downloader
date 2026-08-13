@@ -9,10 +9,15 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
-  details: [song: Song];
+  details: [payload: [song: Song, opener: HTMLButtonElement]];
   download: [song: Song, force: boolean];
   album: [song: Song];
 }>();
+
+function openDetails(event: MouseEvent, song: Song) {
+  (event.currentTarget as HTMLButtonElement).focus();
+  emit('details', [song, event.currentTarget as HTMLButtonElement]);
+}
 </script>
 
 <template>
@@ -27,7 +32,7 @@ const emit = defineEmits<{
     <div class="song-album">{{ song.albumName }}</div>
     <time>{{ formatDuration(song.duration) }}</time>
     <div class="song-actions">
-      <button type="button" class="icon-action" title="歌曲详情" @click="emit('details', song)">详情</button>
+      <button type="button" class="icon-action" title="歌曲详情" @click="openDetails($event, song)">详情</button>
       <button type="button" class="outline-action" @click="emit('album', song)">下载专辑</button>
       <button type="button" :class="downloaded ? 'outline-action' : 'primary-action'" @click="emit('download', song, downloaded)">
         {{ downloaded ? '重新下载' : '下载' }}

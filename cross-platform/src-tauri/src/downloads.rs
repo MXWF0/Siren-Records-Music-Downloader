@@ -19,7 +19,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, State};
-use tokio::{fs, sync::Mutex};
+use tokio::{fs, process::Command, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const CANCELLED: &str = "__SIREN_DOWNLOAD_CANCELLED__";
@@ -52,6 +52,12 @@ struct DownloadFailure {
 #[derive(Clone, Serialize)]
 struct DownloadCancelled {
     id: String,
+}
+
+#[derive(Clone, Serialize)]
+struct DownloadWarning {
+    id: String,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -175,6 +181,32 @@ pub async fn validate_download_directory(download_directory: String) -> Result<(
     validate_directory(&download_directory).await
 }
 
+#[tauri::command]
+pub async fn open_download_directory(
+    app: AppHandle,
+    download_directory: String,
+) -> Result<(), String> {
+    let directory = resolve_download_directory(&app, &download_directory)?;
+    validate_directory(&directory).await?;
+    let mut command = if cfg!(target_os = "windows") {
+        let mut value = Command::new("explorer");
+        value.arg(&directory);
+        value
+    } else if cfg!(target_os = "macos") {
+        let mut value = Command::new("open");
+        value.arg(&directory);
+        value
+    } else {
+        let mut value = Command::new("xdg-open");
+        value.arg(&directory);
+        value
+    };
+    command
+        .spawn()
+        .map_err(|error| format!("无法打开下载目录：{error}"))?;
+    Ok(())
+}
+
 async fn perform_download(
     app: &AppHandle,
     request: &DownloadRequest,
@@ -245,8 +277,36 @@ async fn perform_download(
         };
 
     if let Some(url) = song.get("lyricUrl").and_then(Value::as_str) {
-        if let Some(lyrics) = stream::download_optional_text(&client, url, token).await? {
-            filesystem::write_atomic(&final_base.with_extension("lrc"), lyrics.as_bytes()).await?;
+        match stream::download_optional_text(&client, url, token).await {
+            Ok(Some(lyrics)) => {
+                if let Err(error) =
+                    filesystem::write_atomic(&final_base.with_extension("lrc"), lyrics.as_bytes())
+                        .await
+                {
+                    let message = format!("歌词保存失败，不影响音频文件：{error}");
+                    eprintln!("[SirenRecords] {message}");
+                    let _ = app.emit(
+                        "download-warning",
+                        DownloadWarning {
+                            id: request.id.clone(),
+                            message,
+                        },
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) if lyric_failure_is_blocking(&error) => return Err(error),
+            Err(error) => {
+                let message = format!("歌词下载失败，不影响音频文件：{error}");
+                eprintln!("[SirenRecords] {message}");
+                let _ = app.emit(
+                    "download-warning",
+                    DownloadWarning {
+                        id: request.id.clone(),
+                        message,
+                    },
+                );
+            }
         }
     }
     let extension = audio_extension(downloaded.content_type.as_deref(), &source_url);
@@ -268,6 +328,10 @@ async fn perform_download(
         file_size,
         completed_at,
     })
+}
+
+fn lyric_failure_is_blocking(error: &str) -> bool {
+    error == CANCELLED
 }
 
 #[cfg(test)]
@@ -298,5 +362,11 @@ mod tests {
     fn rejects_invalid_song_identifiers() {
         assert!(valid_song_id("779442"));
         assert!(!valid_song_id("../albums"));
+    }
+
+    #[test]
+    fn lyric_failures_are_non_blocking_except_cancellation() {
+        assert!(!super::lyric_failure_is_blocking("歌词读取超时"));
+        assert!(super::lyric_failure_is_blocking(super::CANCELLED));
     }
 }

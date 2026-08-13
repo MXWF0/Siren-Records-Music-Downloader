@@ -33,6 +33,7 @@ export interface DownloadProgress {
 export interface DownloadFailure {
   id: string;
   message: string;
+  retryAfterSeconds?: number;
 }
 
 export interface PersistedQueueTask {
@@ -61,6 +62,7 @@ export interface DownloadEvents {
   }): void;
   failed(value: DownloadFailure): void;
   cancelled(value: { id: string }): void;
+  warning(value: { id: string; message: string }): void;
 }
 
 export interface PlatformBridge {
@@ -71,6 +73,7 @@ export interface PlatformBridge {
   saveSettings(settings: AppSettings): Promise<void>;
   selectDirectory(): Promise<string | null>;
   validateDownloadDirectory(directory: string): Promise<void>;
+  openDownloadDirectory?(): Promise<void>;
   loadOfficialCatalog?(): Promise<{ albums: unknown; songs: unknown }>;
   loadSongDetails?(id: string): Promise<unknown>;
   loadDownloadedIds(): Promise<string[]>;

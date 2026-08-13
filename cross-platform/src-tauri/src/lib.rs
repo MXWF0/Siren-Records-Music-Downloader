@@ -1,8 +1,8 @@
 mod downloads;
 
 use downloads::{
-    cancel_download, fetch_catalog, fetch_song_detail, recover_downloads, start_download,
-    validate_download_directory, verify_download_manifest, DownloadManager,
+    cancel_download, fetch_catalog, fetch_song_detail, open_download_directory, recover_downloads,
+    start_download, validate_download_directory, verify_download_manifest, DownloadManager,
 };
 use serde::Serialize;
 
@@ -37,6 +37,7 @@ pub fn run() {
             cancel_download,
             recover_downloads,
             validate_download_directory,
+            open_download_directory,
             fetch_catalog,
             fetch_song_detail,
             verify_download_manifest

@@ -81,7 +81,7 @@ export function corsHeaders(request) {
     // Range is sent by the Web worker when resuming a partially written file.
     'Access-Control-Allow-Headers': 'Content-Type, Range',
     'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-    'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Disposition, Content-Length, Content-Range, Content-Type, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset',
+    'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Disposition, Content-Length, Content-Range, Content-Type, Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset',
     'Cross-Origin-Resource-Policy': 'cross-origin',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',

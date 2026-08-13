@@ -9,6 +9,7 @@ const pending = computed(() => props.queue.pending.value);
 const failed = computed(() => props.queue.failed.value);
 const completed = computed(() => props.queue.completed.value);
 const handedOff = computed(() => props.queue.handedOff.value);
+const unfinishedCount = computed(() => props.queue.unfinishedCount.value);
 const emit = defineEmits<{ close: []; status: [message: string, tone?: 'normal' | 'success' | 'error'] }>();
 const collapsed = reactive({ pending: true, failed: true, handedOff: true, completed: true });
 const drawer = ref<HTMLElement | null>(null);
@@ -43,6 +44,10 @@ function handleDialogKeydown(event: KeyboardEvent) {
   }
 }
 
+function handleWindowKeydown(event: KeyboardEvent) {
+  if (props.open && event.key === 'Escape') handleDialogKeydown(event);
+}
+
 function restorePageInteraction() {
   document.body.style.overflow = previousBodyOverflow;
   previousFocus?.focus();
@@ -61,7 +66,15 @@ watch(() => props.open, async (open) => {
   }
 });
 
-onBeforeUnmount(restorePageInteraction);
+watch(() => failed.value.length, (count, previous) => {
+  if (count > previous) collapsed.failed = false;
+});
+
+window.addEventListener('keydown', handleWindowKeydown);
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleWindowKeydown);
+  restorePageInteraction();
+});
 
 function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
@@ -76,10 +89,10 @@ function formatEta(seconds: number | null) {
 
 <template>
   <Transition name="drawer-fade">
-    <div v-if="open" class="queue-layer" @click.self="emit('close')" @keydown="handleDialogKeydown">
+    <div v-if="open" class="queue-layer" @click.self="emit('close')" @keydown.tab="handleDialogKeydown">
       <aside ref="drawer" class="queue-drawer" role="dialog" aria-modal="true" aria-labelledby="queue-heading">
         <header class="drawer-header">
-          <div><h2 id="queue-heading">下载队列</h2><span>并发数量：{{ settings.concurrentDownloads }}</span></div>
+          <div><h2 id="queue-heading">下载队列</h2><span>{{ unfinishedCount ? `${unfinishedCount} 个任务未结束` : '当前没有未完成任务' }} · 并发 {{ settings.concurrentDownloads }}</span></div>
           <button ref="closeButton" type="button" class="drawer-close" aria-label="关闭下载队列" @click="emit('close')">×</button>
         </header>
 
@@ -91,7 +104,7 @@ function formatEta(seconds: number | null) {
                 <div class="queue-item-copy"><strong>{{ item.title }}</strong><span>{{ item.cancelling ? '正在取消下载…' : `${item.album} · ${formatBytes(item.loaded)}${item.total ? ` / ${formatBytes(item.total)}` : ''}` }}</span></div>
                 <div class="queue-progress" aria-hidden="true"><span :style="{ width: `${item.progress}%` }"></span></div>
                 <button type="button" class="queue-cancel" :disabled="item.cancelling" @click="queue.cancel(item.id)">{{ item.cancelling ? '取消中…' : '取消' }}</button>
-                <small>{{ item.total ? `${item.progress}%` : `${(item.rate / 1024 / 1024).toFixed(1)} MB/s` }}</small>
+                <small>{{ item.total ? `${item.progress}% · ${(item.rate / 1024 / 1024).toFixed(1)} MB/s` : `${(item.rate / 1024 / 1024).toFixed(1)} MB/s` }}</small>
                 <em>{{ formatEta(item.etaSeconds) }}</em>
               </article>
             </div>
@@ -111,6 +124,7 @@ function formatEta(seconds: number | null) {
             <div v-if="!collapsed.pending" class="queue-list">
               <article v-for="item in pending" :key="item.id" class="queue-item"><div class="queue-item-copy"><strong>{{ item.title }}</strong><span>{{ item.album }}</span></div><button type="button" class="queue-cancel" @click="queue.cancel(item.id)">取消</button></article>
               <div v-if="!pending.length" class="queue-empty">没有待下载项目</div>
+              <button v-if="pending.length > 1" type="button" class="queue-batch-action" @click="queue.clearPending()">移除全部待下载</button>
             </div>
           </section>
 
@@ -119,6 +133,7 @@ function formatEta(seconds: number | null) {
             <div v-if="!collapsed.failed" class="queue-list">
               <article v-for="item in failed" :key="item.id" class="queue-item failed-item"><div class="queue-item-copy"><strong>{{ item.title }}</strong><span>{{ item.message || '下载失败，请重试' }}</span></div><button type="button" class="outline-action" @click="queue.retry(item.id, settings)">重试</button></article>
               <div v-if="!failed.length" class="queue-empty">没有失败项目</div>
+              <button v-if="failed.length > 1" type="button" class="queue-batch-action" @click="queue.retryAll(settings)">重试全部失败项</button>
             </div>
           </section>
 
@@ -132,7 +147,7 @@ function formatEta(seconds: number | null) {
         </div>
 
         <footer class="drawer-footer">
-          <button type="button" class="outline-action" @click="queue.togglePaused(settings)">{{ queue.paused.value ? '继续队列' : '暂停队列' }}</button>
+          <button type="button" class="outline-action" @click="queue.needsUserResume.value ? queue.resumeRestored(settings) : queue.togglePaused(settings)">{{ queue.paused.value ? '继续队列' : '暂停队列' }}</button>
           <button v-if="failed.length || handedOff.length || completed.length" type="button" class="text-action" @click="queue.clearHistory()">清理历史记录</button>
         </footer>
       </aside>

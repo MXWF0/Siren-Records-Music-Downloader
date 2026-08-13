@@ -13,7 +13,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   enqueue: [song: Song, force?: boolean];
   enqueueMany: [songs: Song[], force?: boolean];
-  details: [song: Song];
+  details: [song: Song, opener?: HTMLElement];
   status: [message: string, tone?: 'normal' | 'success' | 'error'];
 }>();
 
@@ -109,7 +109,7 @@ onBeforeUnmount(() => window.clearTimeout(highlightTimer));
           <button type="button" class="text-action" :disabled="!catalog.pendingSongs.value.length" @click="emit('enqueueMany', catalog.visibleSongs.value)">下载当前结果</button>
         </header>
         <div class="song-table" role="list">
-          <SongRow v-for="(song, index) in catalog.visibleSongs.value" :key="song.cid" :song="song" :index="index" :downloaded="catalog.downloadedIds.value.has(song.cid)" :highlighted="catalog.highlightedId.value === song.cid" @details="emit('details', $event)" @download="emit('enqueue', $event, catalog.downloadedIds.value.has($event.cid))" @album="downloadAlbum" />
+          <SongRow v-for="(song, index) in catalog.visibleSongs.value" :key="song.cid" :song="song" :index="index" :downloaded="catalog.downloadedIds.value.has(song.cid)" :highlighted="catalog.highlightedId.value === song.cid" @details="emit('details', $event[0], $event[1])" @download="emit('enqueue', $event, catalog.downloadedIds.value.has($event.cid))" @album="downloadAlbum" />
         </div>
       </section>
 
@@ -120,14 +120,14 @@ onBeforeUnmount(() => window.clearTimeout(highlightTimer));
             <button type="button" class="text-action" @click="emit('enqueueMany', catalog.pendingSongs.value)">下载本组</button>
           </header>
           <div class="song-table" role="list">
-            <SongRow v-for="(song, index) in catalog.pendingSongs.value" :key="song.cid" :song="song" :index="index" :downloaded="false" :highlighted="catalog.highlightedId.value === song.cid" @details="emit('details', $event)" @download="emit('enqueue', $event)" @album="downloadAlbum" />
+            <SongRow v-for="(song, index) in catalog.pendingSongs.value" :key="song.cid" :song="song" :index="index" :downloaded="false" :highlighted="catalog.highlightedId.value === song.cid" @details="emit('details', $event[0], $event[1])" @download="emit('enqueue', $event)" @album="downloadAlbum" />
           </div>
         </section>
 
         <section v-if="catalog.filter.value !== 'pending' && catalog.downloadedSongs.value.length" class="song-group downloaded-group">
           <header class="song-group-header"><div><span class="group-dot downloaded-dot" aria-hidden="true"></span><strong>已下载</strong><small>{{ catalog.downloadedSongs.value.length }} 首</small></div></header>
           <div class="song-table" role="list">
-            <SongRow v-for="(song, index) in catalog.downloadedSongs.value" :key="song.cid" :song="song" :index="index" :downloaded="true" :highlighted="catalog.highlightedId.value === song.cid" @details="emit('details', $event)" @download="emit('enqueue', $event, true)" @album="downloadAlbum" />
+            <SongRow v-for="(song, index) in catalog.downloadedSongs.value" :key="song.cid" :song="song" :index="index" :downloaded="true" :highlighted="catalog.highlightedId.value === song.cid" @details="emit('details', $event[0], $event[1])" @download="emit('enqueue', $event, true)" @album="downloadAlbum" />
           </div>
         </section>
       </template>

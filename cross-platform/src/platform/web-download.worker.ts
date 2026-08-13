@@ -18,7 +18,12 @@ interface CancelMessage {
   requestId: string;
 }
 
-type WorkerRequest = StartMessage | CancelMessage;
+interface ChunkAckMessage {
+  type: 'chunk-ack';
+  requestId: string;
+}
+
+type WorkerRequest = StartMessage | CancelMessage | ChunkAckMessage;
 
 interface ResponseMessage {
   type: 'response';
@@ -52,6 +57,7 @@ interface TerminalMessage {
   errorStack?: string;
   loaded?: number;
   total?: number | null;
+  retryAfterSeconds?: number;
 }
 
 interface ReadyMessage {
@@ -67,6 +73,7 @@ interface WorkerScope {
 
 const workerScope = self as unknown as WorkerScope;
 const controllers = new Map<string, AbortController>();
+const chunkAcknowledgements = new Map<string, () => void>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object');
@@ -74,10 +81,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isWorkerRequest(value: unknown): value is WorkerRequest {
   if (!isRecord(value) || typeof value.type !== 'string' || typeof value.requestId !== 'string') return false;
-  if (value.type === 'cancel') return true;
+  if (value.type === 'cancel' || value.type === 'chunk-ack') return true;
   return value.type === 'start'
     && typeof value.endpoint === 'string'
     && (value.range === undefined || typeof value.range === 'string');
+}
+
+/**
+ * Keep at most one transferred audio chunk waiting in the main thread. Without
+ * this acknowledgement a fast network can fill the Worker message queue while
+ * a slower disk is still writing, which is especially costly on mobile.
+ */
+function waitForChunkAcknowledgement(requestId: string, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      chunkAcknowledgements.delete(requestId);
+      reject(new DOMException('下载已取消', 'AbortError'));
+    };
+    chunkAcknowledgements.set(requestId, () => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    });
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function errorDetails(error: unknown) {
@@ -104,6 +130,15 @@ async function responseError(response: Response) {
     // The response may be closed by the proxy after an upstream failure.
   }
   return detail || `HTTP ${response.status}`;
+}
+
+function retryAfterSeconds(response: Response) {
+  const value = response.headers.get('retry-after');
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(1, Math.ceil((date - Date.now()) / 1000)) : undefined;
 }
 
 function isAbort(error: unknown, signal: AbortSignal) {
@@ -133,6 +168,9 @@ async function fetchWithRetry(message: StartMessage, signal: AbortSignal) {
       // Retry transient proxy/CDN responses before any body is consumed. This
       // avoids duplicating bytes already written to a FileSystem writer.
       if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 1) return response;
+      // Rate limiting is coordinated by the queue from Retry-After so all
+      // concurrent tasks stop together instead of each worker retrying early.
+      if (response.status === 429) return response;
       await response.body?.cancel().catch(() => undefined);
       await wait(350, signal);
     } catch (error) {
@@ -150,9 +188,11 @@ async function runDownload(message: StartMessage) {
   controllers.set(message.requestId, controller);
   let loaded = 0;
   let total: number | null = null;
+  let retryAfter: number | undefined;
   try {
     const response = await fetchWithRetry(message, controller.signal);
     if (!response.ok) {
+      retryAfter = response.status === 429 ? retryAfterSeconds(response) : undefined;
       const detail = await responseError(response);
       throw new Error(`HTTP ${response.status}${detail && !/^HTTP\s+\d+/i.test(detail) ? `：${detail}` : ''}`);
     }
@@ -180,7 +220,10 @@ async function runDownload(message: StartMessage) {
         ? chunk.buffer
         : chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
       post({ type: 'chunk', requestId: message.requestId, buffer, loaded, total }, [buffer]);
-      post({ type: 'progress', requestId: message.requestId, loaded, total });
+      await waitForChunkAcknowledgement(message.requestId, controller.signal);
+    }
+    if (total !== null && loaded !== total) {
+      throw new Error(`音频下载不完整：应为 ${total} 字节，实际为 ${loaded} 字节`);
     }
     post({ type: 'complete', requestId: message.requestId });
   } catch (error) {
@@ -203,10 +246,12 @@ async function runDownload(message: StartMessage) {
         errorName: details.name,
         errorStack: details.stack,
         loaded,
-        total
+        total,
+        retryAfterSeconds: retryAfter
       });
     }
   } finally {
+    chunkAcknowledgements.delete(message.requestId);
     controllers.delete(message.requestId);
   }
 }
@@ -219,6 +264,12 @@ workerScope.addEventListener('message', (event) => {
   }
   if (message.type === 'cancel') {
     controllers.get(message.requestId)?.abort();
+    return;
+  }
+  if (message.type === 'chunk-ack') {
+    const acknowledge = chunkAcknowledgements.get(message.requestId);
+    chunkAcknowledgements.delete(message.requestId);
+    acknowledge?.();
     return;
   }
   void runDownload(message);

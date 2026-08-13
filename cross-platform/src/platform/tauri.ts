@@ -30,6 +30,10 @@ function saveFallbackSettings(settings: AppSettings) {
   }
 }
 
+export function downloadDirectoryInvokeArguments(directory: string) {
+  return { downloadDirectory: directory };
+}
+
 const windowControls = {
   async minimize() {
     await getCurrentWindow().minimize();
@@ -84,7 +88,12 @@ export const tauriPlatform: PlatformBridge = {
   },
 
   async validateDownloadDirectory(directory) {
-    await invoke('validate_download_directory', { directory });
+    await invoke('validate_download_directory', downloadDirectoryInvokeArguments(directory));
+  },
+
+  async openDownloadDirectory() {
+    const settings = await this.getSettings();
+    await invoke('open_download_directory', downloadDirectoryInvokeArguments(settings.downloadDirectory));
   },
 
   async loadOfficialCatalog() {
@@ -139,7 +148,8 @@ export const tauriPlatform: PlatformBridge = {
       listen('download-progress', (event) => events.progress(event.payload as Parameters<DownloadEvents['progress']>[0])),
       listen('download-complete', (event) => events.complete(event.payload as Parameters<DownloadEvents['complete']>[0])),
       listen('download-failed', (event) => events.failed(event.payload as Parameters<DownloadEvents['failed']>[0])),
-      listen('download-cancelled', (event) => events.cancelled(event.payload as Parameters<DownloadEvents['cancelled']>[0]))
+      listen('download-cancelled', (event) => events.cancelled(event.payload as Parameters<DownloadEvents['cancelled']>[0])),
+      listen('download-warning', (event) => events.warning(event.payload as Parameters<DownloadEvents['warning']>[0]))
     ]);
     return () => unlisten.forEach((dispose) => dispose());
   }

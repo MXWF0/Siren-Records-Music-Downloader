@@ -131,7 +131,7 @@ async fn sync_parent(_path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::atomic_replace;
+    use super::{atomic_replace, validate_directory};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -153,6 +153,22 @@ mod tests {
         fs::write(&target, b"old").unwrap();
         atomic_replace(&source, &target).await.unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"new");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn validates_a_writable_download_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "siren-directory-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        validate_directory(root.to_string_lossy().as_ref())
+            .await
+            .unwrap();
+        assert!(root.is_dir());
         let _ = fs::remove_dir_all(root);
     }
 }

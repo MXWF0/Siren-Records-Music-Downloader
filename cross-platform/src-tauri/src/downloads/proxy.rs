@@ -3,7 +3,6 @@ use std::time::Duration;
 pub fn build_http_client() -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60))
         .user_agent(format!(
             "Siren-Records-Cross-Platform/{}",
             env!("CARGO_PKG_VERSION")
