@@ -39,6 +39,10 @@ function normalizeAddress(value) {
 
 export function isTrustedProxy(request) {
   if (process.env.SIREN_TRUST_PROXY === '1') return true;
+  // Vercel terminates TLS before invoking the function. Its injected runtime
+  // marker lets us trust the platform forwarding headers without weakening
+  // self-hosted deployments that receive arbitrary forwarded values.
+  if (process.env.VERCEL === '1') return true;
   const remote = normalizeAddress(request?.socket?.remoteAddress);
   if (remote === '127.0.0.1' || remote === '::1') return true;
   return new Set(parseList(process.env.SIREN_TRUSTED_PROXIES)).has(remote);

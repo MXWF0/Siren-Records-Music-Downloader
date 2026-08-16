@@ -147,7 +147,7 @@ function formatEta(seconds: number | null) {
         </div>
 
         <footer class="drawer-footer">
-          <button type="button" class="outline-action" @click="queue.needsUserResume.value ? queue.resumeRestored(settings) : queue.togglePaused(settings)">{{ queue.paused.value ? '继续队列' : '暂停队列' }}</button>
+          <button type="button" class="outline-action" @click="queue.needsUserResume.value ? queue.resumeRestored(settings) : queue.togglePaused(settings)">{{ queue.needsUserResume.value ? '继续下载下一首' : queue.paused.value ? '继续队列' : '暂停队列' }}</button>
           <button v-if="failed.length || handedOff.length || completed.length" type="button" class="text-action" @click="queue.clearHistory()">清理历史记录</button>
         </footer>
       </aside>

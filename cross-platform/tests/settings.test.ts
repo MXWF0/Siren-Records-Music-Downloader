@@ -15,7 +15,7 @@ describe('normalizeSettings', () => {
       downloadDirectory: '',
       separateDirectory: false,
       groupByDownload: false,
-      concurrentDownloads: 2
+      concurrentDownloads: 1
     });
   });
 

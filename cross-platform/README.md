@@ -1,6 +1,6 @@
 # 塞壬唱片下载器跨平台版
 
-当前版本：<!-- app-version:start -->v1.4.1<!-- app-version:end -->。这是与旧 Electron 版隔离的 Vue 3 + TypeScript + Tauri 2 项目；旧版位于 `resources/app`，继续使用 v5.x 版本线，本目录使用 v1.x。
+当前版本：<!-- app-version:start -->v1.4.2<!-- app-version:end -->。这是与旧 Electron 版隔离的 Vue 3 + TypeScript + Tauri 2 项目；旧版位于 `resources/app`，继续使用 v5.x 版本线，本目录使用 v1.x。
 
 本项目从塞壬唱片官网实时读取公开目录，并保存官网提供的原始音频格式。不会把 MP3、AAC 等有损音频转成 WAV 后称为无损。使用者应遵守当地法律、官网条款与版权规则，下载内容仅限个人学习和研究用途。
 

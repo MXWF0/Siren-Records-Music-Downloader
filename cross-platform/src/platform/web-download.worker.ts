@@ -129,6 +129,9 @@ async function responseError(response: Response) {
   } catch {
     // The response may be closed by the proxy after an upstream failure.
   }
+  if (/temporarily paused|deployment.*paused/i.test(detail)) return '下载代理服务已暂停';
+  // Do not surface an HTML error document from an upstream platform.
+  if (/^<!doctype|^<html/i.test(detail)) return `HTTP ${response.status}`;
   return detail || `HTTP ${response.status}`;
 }
 
@@ -157,7 +160,7 @@ function wait(milliseconds: number, signal: AbortSignal) {
 
 async function fetchWithRetry(message: StartMessage, signal: AbortSignal) {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const response = await fetch(message.endpoint, {
         cache: 'no-store',
@@ -167,17 +170,17 @@ async function fetchWithRetry(message: StartMessage, signal: AbortSignal) {
       });
       // Retry transient proxy/CDN responses before any body is consumed. This
       // avoids duplicating bytes already written to a FileSystem writer.
-      if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 1) return response;
+      if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) return response;
       // Rate limiting is coordinated by the queue from Retry-After so all
       // concurrent tasks stop together instead of each worker retrying early.
       if (response.status === 429) return response;
       await response.body?.cancel().catch(() => undefined);
-      await wait(350, signal);
+      await wait(attempt === 0 ? 500 : 1_200, signal);
     } catch (error) {
       if (isAbort(error, signal)) throw error;
       lastError = error;
-      if (attempt === 1) throw error;
-      await wait(350, signal);
+      if (attempt === 2) throw error;
+      await wait(attempt === 0 ? 500 : 1_200, signal);
     }
   }
   throw lastError instanceof Error ? lastError : new Error('网络请求失败');

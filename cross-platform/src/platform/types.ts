@@ -68,6 +68,8 @@ export interface DownloadEvents {
 export interface PlatformBridge {
   readonly kind: 'tauri' | 'web';
   readonly maxConcurrentDownloads?: number;
+  /** Browser-managed downloads must be started directly by a user gesture. */
+  readonly requiresUserGestureForDownload?: boolean;
   readonly windowControls?: WindowControls;
   getSettings(): Promise<AppSettings>;
   saveSettings(settings: AppSettings): Promise<void>;

@@ -39,7 +39,7 @@ function updateConcurrency(event: Event) {
         <ToggleSwitch v-if="props.desktop" :model-value="props.settings.separateDirectory" label="按专辑文件夹保存音乐" description="桌面版下载时按专辑归档。" class="display-toggle" @update:model-value="emit('updateSettings', { separateDirectory: $event })" />
         <ToggleSwitch :model-value="props.settings.groupByDownload" label="按已下载状态分类显示" description="分开展示已下载和未下载歌曲。" class="display-toggle" @update:model-value="emit('updateSettings', { groupByDownload: $event })" />
         <label class="concurrency-setting">
-          <span><strong>同时下载任务</strong><small>可设置 1～3 个，默认同时下载 2 个。</small></span>
+          <span><strong>同时下载任务</strong><small>可设置 1～3 个，默认同时下载 1 个。</small></span>
           <select name="concurrent-downloads" :value="props.settings.concurrentDownloads" @change="updateConcurrency">
             <option :value="1">1 个</option>
             <option :value="2">2 个</option>

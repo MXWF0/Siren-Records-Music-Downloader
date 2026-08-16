@@ -156,6 +156,7 @@ const localProxyCandidates = ['http://127.0.0.1:4173', 'http://localhost:4173'];
 let detectedProxyBase: string | null | undefined;
 let detectedProxyPromise: Promise<string> | undefined;
 let detectedProxyCheckedAt = 0;
+let recentProxyFailure: { message: string; checkedAt: number } | null = null;
 
 function isCatalogPayload(value: unknown): value is { albums: unknown; songs: unknown } {
   return Boolean(value && typeof value === 'object' && 'albums' in value && 'songs' in value);
@@ -311,6 +312,7 @@ async function requestCatalog(endpoint: string) {
       const payload = await response.json();
       if (!isCatalogPayload(payload)) throw new Error('官网目录代理返回了无效数据');
       cacheCatalog(payload);
+      recentProxyFailure = null;
       return payload;
     } catch (error) {
       lastError = error;
@@ -319,6 +321,8 @@ async function requestCatalog(endpoint: string) {
       globalThis.clearTimeout(timeout);
     }
   }
+  const normalized = normalizeDownloadError(lastError);
+  recentProxyFailure = { message: normalized.message, checkedAt: Date.now() };
   throw lastError;
 }
 
@@ -392,6 +396,9 @@ export function friendlyDownloadError(error: unknown, staticFileMode: boolean) {
   if (/没有权限|未获.*授权/i.test(message)) return '当前站点未获得下载服务授权，请联系维护者检查允许来源设置。';
   if (/HTTP\s*403/i.test(message)) return 'HTTP 403：音频地址失效，代理正在刷新官方签名，请稍后重试。';
   if (/HTTP\s*401/i.test(message)) return 'HTTP 401：下载服务未授权，请稍后重试或联系维护者。';
+  if (/HTTP\s*402|deployment.*paused|temporarily paused|代理服务已暂停/i.test(message)) {
+    return '下载代理服务已暂停（HTTP 402），当前无法连接官网音频，请联系维护者恢复代理部署。';
+  }
   if (/HTTP\s*404/i.test(message)) return staticFileMode ? staticDownloadHint : `HTTP 404：${proxyConfigurationHint}`;
   if (/NotAllowedError/i.test(normalized.name) || /NotAllowedError|拒绝文件写入权限|用户激活/i.test(message)) {
     return 'NotAllowedError：浏览器拒绝文件写入权限，请重新点击下载并允许保存。';
@@ -440,6 +447,15 @@ function directoryPickerIsAvailable() {
 
 export function webDownloadConcurrency(savePicker: boolean, directoryPicker: boolean) {
   return savePicker || directoryPicker ? 3 : 1;
+}
+
+export function browserDownloadNeedsUserGesture(
+  savePicker: boolean,
+  directoryPicker: boolean,
+  hasDirectoryHandle: boolean,
+  pickerAttempted: boolean
+) {
+  return !hasDirectoryHandle && ((!savePicker && !directoryPicker) || pickerAttempted);
 }
 
 export function canUseFileSystemStream(
@@ -593,6 +609,49 @@ export function resolveWorkerAssetUrl(
     });
   }
   return rebasedUrl;
+}
+
+function usesBrowserManagedDownload() {
+  return browserDownloadNeedsUserGesture(
+    pickerIsAvailable(),
+    directoryPickerIsAvailable(),
+    Boolean(downloadDirectoryHandle),
+    savePickerAttempted
+  );
+}
+
+function synchronousDownloadEndpoint(id: string) {
+  const apiBase = getConfiguredApiBase();
+  const staticFileMode = typeof location !== 'undefined' && location.protocol === 'file:' && !apiBase;
+  return {
+    endpoint: apiBase
+      ? resolveApiUrl(`/api/audio?id=${encodeURIComponent(id)}`, apiBase)
+      : `/api/audio?id=${encodeURIComponent(id)}`,
+    staticFileMode
+  };
+}
+
+function recentBlockingProxyError() {
+  if (!recentProxyFailure || Date.now() - recentProxyFailure.checkedAt > 60_000) return null;
+  return /HTTP\s*402|deployment.*paused|temporarily paused|代理服务已暂停/i.test(recentProxyFailure.message)
+    ? new Error(recentProxyFailure.message)
+    : null;
+}
+
+async function finishBrowserManagedDownload(request: DownloadRequest) {
+  try {
+    await saveDownloadRecord({
+      cid: request.id,
+      name: request.title || request.id,
+      filename: request.fileName || `${request.id}.wav`,
+      size: 0,
+      downloadedAt: Date.now(),
+      status: 'handed_off'
+    });
+  } finally {
+    activeDownloads.delete(request.id);
+    emit('complete', { id: request.id, outcome: 'handed_off' });
+  }
 }
 
 function resolveWorkerUrl(generatedUrl: URL) {
@@ -923,6 +982,15 @@ async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
       ? resolveApiUrl(`/api/audio?id=${encodeURIComponent(request.id)}`, apiBase)
       : `/api/audio?id=${encodeURIComponent(request.id)}`;
     if (!fileHandle) {
+      // A browser-managed download must be opened in the same user-activation
+      // task as the click. If a picker failed asynchronously, ask for a new
+      // click instead of silently triggering a download that WebKit will block.
+      if (!hasUserActivation()) {
+        savePickerAttempted = true;
+        const error = new Error('浏览器需要用户激活后才能开始下载，请点击重试');
+        error.name = 'NotAllowedError';
+        throw error;
+      }
       handOffBrowserManagedDownload(endpoint, request.fileName || `${request.id}.wav`);
       await saveDownloadRecord({
         cid: request.id,
@@ -982,9 +1050,14 @@ async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
 export const webPlatform: PlatformBridge = {
   kind: 'web',
   // The worker keeps network work off the Vue thread. The queue still caps the
-  // default at two and lets the user choose one to three concurrent tasks.
+  // defaults to one and lets the user choose one to three concurrent tasks.
   get maxConcurrentDownloads() {
-    return webDownloadConcurrency(pickerIsAvailable(), directoryPickerIsAvailable());
+    return usesBrowserManagedDownload()
+      ? 1
+      : webDownloadConcurrency(pickerIsAvailable(), directoryPickerIsAvailable());
+  },
+  get requiresUserGestureForDownload() {
+    return usesBrowserManagedDownload();
   },
 
   async getSettings() {
@@ -1061,6 +1134,30 @@ export const webPlatform: PlatformBridge = {
   async startDownload(request) {
     if (activeDownloads.has(request.id)) throw new Error('该歌曲正在下载');
     const controller = new AbortController();
+
+    // Safari, Firefox and most mobile browsers do not expose a writable file
+    // picker. Trigger their download manager synchronously while the click is
+    // still active; awaiting proxy detection first causes WebKit to block it.
+    if (usesBrowserManagedDownload()) {
+      if (!hasUserActivation()) {
+        const error = new Error('浏览器需要用户激活后才能开始下载，请点击“继续下载下一首”');
+        error.name = 'NotAllowedError';
+        throw error;
+      }
+      const blockedProxy = recentBlockingProxyError();
+      if (blockedProxy) throw new Error(friendlyDownloadError(blockedProxy, false));
+      const { endpoint, staticFileMode } = synchronousDownloadEndpoint(request.id);
+      if (staticFileMode) throw new Error(staticDownloadHint);
+      activeDownloads.set(request.id, { controller, fileHandlePromise: Promise.resolve(null) });
+      try {
+        handOffBrowserManagedDownload(endpoint, request.fileName || `${request.id}.wav`);
+      } catch (error) {
+        activeDownloads.delete(request.id);
+        throw error;
+      }
+      void finishBrowserManagedDownload(request);
+      return { started: true };
+    }
     const active: ActiveDownload = {
       controller,
       // Invoke this before the first await in the queue call so a real click's

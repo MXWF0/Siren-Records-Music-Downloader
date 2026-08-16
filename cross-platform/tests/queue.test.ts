@@ -94,7 +94,7 @@ describe('queue store', () => {
     };
     const store = createQueueStore(platform, ref(new Set<string>()), () => {});
     store.enqueueMany([...songs, { cid: '3', name: '第三首', albumCid: 'b', albumName: '专辑 B' }]);
-    await store.runNext({ ...defaultSettings, separateDirectory: false });
+    await store.runNext({ ...defaultSettings, separateDirectory: false, concurrentDownloads: 2 });
     expect(started).toEqual(['1', '2']);
     expect(store.active.value).toHaveLength(2);
     expect(store.pending.value.map((item) => item.id)).toEqual(['3']);
@@ -130,6 +130,32 @@ describe('queue store', () => {
     await store.runNext({ ...defaultSettings, concurrentDownloads: 3 });
     expect(started).toEqual(['1']);
     expect(store.pending.value.map((item) => item.id)).toEqual(['2']);
+  });
+
+  it('waits for a new user gesture before handing off the next album track', async () => {
+    let events: Parameters<PlatformBridge['listenDownloadEvents']>[0] | undefined;
+    const started: string[] = [];
+    const platform: PlatformBridge = {
+      ...webPreviewPlatform,
+      maxConcurrentDownloads: 1,
+      requiresUserGestureForDownload: true,
+      startDownload: async (request) => { started.push(request.id); return { started: true }; },
+      listenDownloadEvents: async (value) => { events = value; return () => {}; }
+    };
+    const store = createQueueStore(platform, ref(new Set<string>()), () => {});
+    await store.connect();
+    store.enqueueMany(songs);
+
+    await store.runNext(defaultSettings, true);
+    expect(started).toEqual(['1']);
+    events?.complete({ id: '1', outcome: 'handed_off' });
+    await Promise.resolve();
+    expect(started).toEqual(['1']);
+    expect(store.needsUserResume.value).toBe(true);
+    expect(store.pending.value.map((item) => item.id)).toEqual(['2']);
+
+    await store.resumeRestored(defaultSettings);
+    expect(started).toEqual(['1', '2']);
   });
 
   it('requires an explicit resume for restored web tasks', async () => {

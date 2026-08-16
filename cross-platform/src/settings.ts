@@ -11,7 +11,7 @@ export const defaultSettings: AppSettings = {
   downloadDirectory: '',
   separateDirectory: true,
   groupByDownload: true,
-  concurrentDownloads: 2
+  concurrentDownloads: 1
 };
 
 export function normalizeSettings(value: unknown): AppSettings {

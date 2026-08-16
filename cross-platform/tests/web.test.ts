@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  browserDownloadNeedsUserGesture,
   canUseFileSystemStream,
   friendlyDownloadError,
   handOffBrowserManagedDownload,
@@ -23,6 +24,13 @@ describe('web download errors', () => {
     expect(webPlatform.maxConcurrentDownloads).toBe(1);
   });
 
+  it('requires a fresh click when the browser download manager owns the file', () => {
+    expect(browserDownloadNeedsUserGesture(false, false, false, false)).toBe(true);
+    expect(browserDownloadNeedsUserGesture(true, false, false, false)).toBe(false);
+    expect(browserDownloadNeedsUserGesture(true, false, false, true)).toBe(true);
+    expect(browserDownloadNeedsUserGesture(true, true, true, true)).toBe(false);
+  });
+
   it('explains rejected origins without exposing backend details', () => {
     const message = friendlyDownloadError(new Error('当前网站没有权限使用此下载接口'), false);
     expect(message).toContain('未获得下载服务授权');
@@ -32,6 +40,11 @@ describe('web download errors', () => {
   it('keeps the upstream HTTP status visible for an expired audio signature', () => {
     expect(friendlyDownloadError(new Error('HTTP 403：下载服务暂时不可用'), false))
       .toContain('HTTP 403：音频地址失效');
+  });
+
+  it('explains a paused deployment instead of reporting a device network fault', () => {
+    expect(friendlyDownloadError(new Error('HTTP 402: This deployment is temporarily paused'), false))
+      .toContain('下载代理服务已暂停');
   });
 
   it('does not mislabel an origin policy rejection as an expired audio URL', () => {
@@ -87,6 +100,29 @@ describe('web download errors', () => {
     expect(anchor.href).toBe('/api/audio?id=42');
     expect(anchor.download).toBe('Track.wav');
     expect(click).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('starts a mobile browser handoff synchronously inside the click task', async () => {
+    const click = vi.fn();
+    const anchor = { href: '', download: '', rel: '', referrerPolicy: '', style: {}, click, remove: vi.fn() };
+    vi.stubGlobal('window', { __SIREN_API_BASE__: '' });
+    vi.stubGlobal('location', { protocol: 'https:' });
+    vi.stubGlobal('navigator', { userActivation: { isActive: true }, userAgent: 'Mobile Safari' });
+    vi.stubGlobal('document', { createElement: () => anchor, body: { append: vi.fn() } });
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => null), setItem: vi.fn() });
+    vi.stubGlobal('indexedDB', undefined);
+
+    const result = webPlatform.startDownload({
+      id: 'mobile-track',
+      title: 'Mobile Track',
+      fileName: 'Mobile Track.wav',
+      downloadDirectory: '',
+      separateDirectory: false
+    });
+    expect(click).toHaveBeenCalledOnce();
+    await expect(result).resolves.toEqual({ started: true });
+    await Promise.resolve();
     vi.unstubAllGlobals();
   });
 

@@ -40,7 +40,7 @@ export interface QueueStore {
   enqueue(song: Song, force?: boolean): boolean;
   enqueueMany(songs: Song[], force?: boolean): number;
   restore(): Promise<void>;
-  runNext(settings: AppSettings): Promise<void>;
+  runNext(settings: AppSettings, userInitiated?: boolean): Promise<void>;
   togglePaused(settings: AppSettings): Promise<void>;
   cancel(id: string): Promise<void>;
   retry(id: string, settings: AppSettings): Promise<void>;
@@ -109,7 +109,8 @@ export function createQueueStore(
   let currentSettings: AppSettings | null = null;
   let networkAvailable = true;
   let awaitingRestoredResume = false;
-  const needsUserResume = computed(() => awaitingRestoredResume);
+  let awaitingBrowserGesture = false;
+  const needsUserResume = computed(() => awaitingRestoredResume || awaitingBrowserGesture);
   let rateLimitUntil = 0;
   let rateLimitTimer: ReturnType<typeof setTimeout> | undefined;
   let persistence = Promise.resolve();
@@ -200,12 +201,18 @@ export function createQueueStore(
     persist();
   }
 
-  async function runNext(settings: AppSettings) {
+  async function runNext(settings: AppSettings, userInitiated = false) {
     currentSettings = settings;
     if (paused.value || !networkAvailable || Date.now() < rateLimitUntil) return;
+    if (platform.requiresUserGestureForDownload && !userInitiated && pending.value.length) {
+      awaitingBrowserGesture = true;
+      notify('当前浏览器要求逐项确认下载，请点击“继续下载下一首”', 'normal');
+      return;
+    }
+    if (userInitiated) awaitingBrowserGesture = false;
     if (platform.kind === 'web' && (platform.maxConcurrentDownloads ?? 1) === 1 && activeIds.size > 0) return;
     const requestedLimit = Number(settings.concurrentDownloads);
-    const configuredLimit = Number.isInteger(requestedLimit) ? Math.min(3, Math.max(1, requestedLimit)) : 2;
+    const configuredLimit = Number.isInteger(requestedLimit) ? Math.min(3, Math.max(1, requestedLimit)) : 1;
     const limit = Math.min(configuredLimit, platform.maxConcurrentDownloads ?? 3);
     while (activeIds.size + startingIds.size < limit) {
       const next = pending.value.find((item) => !startingIds.has(item.id));
@@ -242,10 +249,13 @@ export function createQueueStore(
 
   async function togglePaused(settings: AppSettings) {
     paused.value = !paused.value;
-    if (!paused.value) awaitingRestoredResume = false;
+    if (!paused.value) {
+      awaitingRestoredResume = false;
+      awaitingBrowserGesture = false;
+    }
     persist();
     notify(paused.value ? '队列已暂停，不再启动新的下载' : '队列已继续', 'success');
-    if (!paused.value) await runNext(settings);
+    if (!paused.value) await runNext(settings, true);
   }
 
   async function cancel(id: string) {
@@ -282,7 +292,7 @@ export function createQueueStore(
     });
     persist();
     notify(`已重新加入《${item.title}》`, 'success');
-    await runNext(settings);
+    await runNext(settings, true);
   }
 
   async function retryAll(settings: AppSettings) {
@@ -294,7 +304,7 @@ export function createQueueStore(
     if (retryable.length) {
       persist();
       notify(`已重新加入 ${retryable.length} 个失败任务`, 'success');
-      await runNext(settings);
+      await runNext(settings, true);
     }
     return retryable.length;
   }
@@ -340,12 +350,14 @@ export function createQueueStore(
   }
 
   async function resumeRestored(settings: AppSettings) {
-    if (!awaitingRestoredResume) return;
+    if (!awaitingRestoredResume && !awaitingBrowserGesture) return;
+    const restored = awaitingRestoredResume;
     awaitingRestoredResume = false;
+    awaitingBrowserGesture = false;
     paused.value = false;
     persist();
-    notify('已继续恢复的下载队列', 'success');
-    await runNext(settings);
+    notify(restored ? '已继续恢复的下载队列' : '正在继续下载下一首', 'success');
+    await runNext(settings, true);
   }
 
   function applyRateLimit(seconds: number) {

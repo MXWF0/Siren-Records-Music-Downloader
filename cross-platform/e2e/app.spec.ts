@@ -47,6 +47,37 @@ test('mobile song actions and download footer keep touch-sized targets', async (
   await page.goto('/');
   const download = page.getByRole('button', { name: '下载', exact: true }).first();
   const queue = page.getByRole('button', { name: /下载队列/ });
-  expect((await download.boundingBox())?.height).toBeGreaterThanOrEqual(44);
-  expect((await queue.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  // Firefox may report a sub-pixel rounding value such as 43.99997 for a
+  // computed 44px target, so keep a small rendering tolerance.
+  expect((await download.boundingBox())?.height).toBeGreaterThanOrEqual(43.9);
+  expect((await queue.boundingBox())?.height).toBeGreaterThanOrEqual(43.9);
+});
+
+test('browser-managed album downloads wait for a fresh user gesture between files', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'showDirectoryPicker', { value: undefined, configurable: true });
+    Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
+  });
+  await page.route('**/api/audio?**', (route) => route.fulfill({
+    status: 200,
+    headers: {
+      'Content-Type': 'audio/wav',
+      'Content-Disposition': 'attachment; filename="test.wav"'
+    },
+    body: 'RIFFtest'
+  }));
+  await page.goto('/');
+
+  const firstDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载本组' }).click();
+  await (await firstDownload).cancel();
+
+  await page.getByRole('button', { name: /下载队列/ }).click();
+  const resume = page.getByRole('button', { name: '继续下载下一首' });
+  await expect(resume).toBeVisible();
+
+  const secondDownload = page.waitForEvent('download');
+  await resume.click();
+  await (await secondDownload).cancel();
+  await expect(resume).toBeVisible();
 });

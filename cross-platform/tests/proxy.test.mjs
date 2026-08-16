@@ -27,7 +27,10 @@ function request(origin, host = 'api.example') {
 
 describe('proxy request policy', () => {
   beforeEach(() => resetRateLimitsForTests());
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
 
   it('allows the project Pages origin and same-origin deployments', () => {
     expect(isOriginAllowed(request('https://mxwf0.github.io'))).toBe(true);
@@ -47,6 +50,14 @@ describe('proxy request policy', () => {
     untrusted.socket.remoteAddress = '203.0.113.8';
     expect(isTrustedProxy(untrusted)).toBe(false);
     expect(isOriginAllowed(untrusted)).toBe(false);
+  });
+
+  it('recognizes same-origin HTTPS requests behind the Vercel TLS proxy', () => {
+    vi.stubEnv('VERCEL', '1');
+    const serverless = request('https://cross-platform-delta.vercel.app', 'cross-platform-delta.vercel.app');
+    serverless.socket.remoteAddress = '203.0.113.8';
+    expect(isTrustedProxy(serverless)).toBe(true);
+    expect(isOriginAllowed(serverless)).toBe(true);
   });
 
   it('limits repeated requests within one window', () => {

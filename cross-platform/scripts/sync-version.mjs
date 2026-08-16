@@ -14,6 +14,16 @@ if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
 
 const updates = [
   {
+    path: resolve(root, 'package-lock.json'),
+    transform: (text) => {
+      let rootVersionFields = 0;
+      return text.replace(/("version"\s*:\s*")[^"]+("\s*,)/g, (match, prefix, suffix) => {
+        rootVersionFields += 1;
+        return rootVersionFields <= 2 ? `${prefix}${version}${suffix}` : match;
+      });
+    }
+  },
+  {
     path: resolve(root, 'src-tauri/Cargo.toml'),
     transform: (text) => text.replace(/(\[package\][\s\S]*?\nversion\s*=\s*")[^"]+("\s*)/, `$1${version}$2`)
   },
