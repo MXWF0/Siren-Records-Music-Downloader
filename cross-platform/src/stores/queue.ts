@@ -189,13 +189,21 @@ export function createQueueStore(
   async function restore() {
     const stored = await platform.loadQueueState();
     if (!stored || stored.version !== 1 || !Array.isArray(stored.tasks)) return;
+    // A user can click download while the application is still restoring its
+    // queue. Preserve those live items instead of replacing them with the
+    // snapshot read from storage.
+    const existingIds = new Set(items.value.map((item) => item.id));
     const restored = stored.tasks
       .map(queueItemFromTask)
       .filter((item): item is QueueItem => Boolean(item))
       .filter((item, index, values) => values.findIndex((value) => value.id === item.id) === index)
       .filter((item) => !downloadedIds.value.has(item.id));
-    items.value = restored;
-    awaitingRestoredResume = platform.kind === 'web' && restored.length > 0;
+    const restoredOnly = restored.filter((item) => !existingIds.has(item.id));
+    items.value = [...items.value, ...restoredOnly];
+    // Only a queue restored into an otherwise idle store requires the
+    // explicit resume gesture. Items added by the current user interaction
+    // must remain startable while initialization finishes.
+    awaitingRestoredResume = platform.kind === 'web' && restoredOnly.length > 0 && existingIds.size === 0;
     paused.value = Boolean(stored.paused) || awaitingRestoredResume;
     if (awaitingRestoredResume) notify('已恢复上次未完成任务，请点击“继续队列”后开始下载');
     persist();
@@ -203,7 +211,17 @@ export function createQueueStore(
 
   async function runNext(settings: AppSettings, userInitiated = false) {
     currentSettings = settings;
-    if (paused.value || !networkAvailable || Date.now() < rateLimitUntil) return;
+    // A direct download click is an explicit user gesture and should also
+    // resume a queue that was paused only to protect restored browser tasks.
+    // A manually paused queue remains paused until its dedicated control is
+    // used.
+    if (paused.value) {
+      if (!(userInitiated && awaitingRestoredResume)) return;
+      awaitingRestoredResume = false;
+      paused.value = false;
+      persist();
+    }
+    if ((!networkAvailable && !userInitiated) || Date.now() < rateLimitUntil) return;
     if (platform.requiresUserGestureForDownload && !userInitiated && pending.value.length) {
       awaitingBrowserGesture = true;
       notify('当前浏览器要求逐项确认下载，请点击“继续下载下一首”', 'normal');

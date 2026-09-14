@@ -118,6 +118,45 @@ describe('queue store', () => {
     expect(store.pending.value.map((item) => item.id)).toEqual(['1']);
   });
 
+  it('keeps a user download startable when queue restoration races with enqueue', async () => {
+    const started: string[] = [];
+    const platform: PlatformBridge = {
+      ...webPreviewPlatform,
+      loadQueueState: async () => ({
+        version: 1, paused: false,
+        tasks: [{ id: '1', title: '第一首', album: '专辑 A', state: 'pending', force: false }]
+      }),
+      startDownload: async (request) => { started.push(request.id); return { started: true }; }
+    };
+    const store = createQueueStore(platform, ref(new Set<string>()), () => {});
+    store.enqueue(songs[0]);
+    await store.restore();
+    expect(store.items.value.map((item) => item.id)).toEqual(['1']);
+    expect(store.paused.value).toBe(false);
+    await store.runNext(defaultSettings, true);
+    expect(started).toEqual(['1']);
+    expect(store.active.value).toHaveLength(1);
+  });
+
+  it('lets a direct download click resume a restored web queue', async () => {
+    const started: string[] = [];
+    const platform: PlatformBridge = {
+      ...webPreviewPlatform,
+      loadQueueState: async () => ({
+        version: 1, paused: false,
+        tasks: [{ id: '1', title: '第一首', album: '专辑 A', state: 'pending', force: false }]
+      }),
+      startDownload: async (request) => { started.push(request.id); return { started: true }; }
+    };
+    const store = createQueueStore(platform, ref(new Set<string>()), () => {});
+    await store.restore();
+    expect(store.paused.value).toBe(true);
+    store.enqueue(songs[1]);
+    await store.runNext(defaultSettings, true);
+    expect(started).toEqual(['1']);
+    expect(store.paused.value).toBe(false);
+  });
+
   it('starts only one browser handoff at a time on unsupported browsers', async () => {
     const started: string[] = [];
     const platform: PlatformBridge = {
@@ -221,6 +260,19 @@ describe('queue store', () => {
     store.items.value[0].state = 'failed';
     store.items.value[0].message = 'NetworkError：网络请求失败';
     await store.setNetworkAvailable(true, defaultSettings);
+    expect(started).toEqual(['1']);
+  });
+
+  it('attempts a direct download click when navigator.onLine is stale', async () => {
+    const started: string[] = [];
+    const platform: PlatformBridge = {
+      ...webPreviewPlatform,
+      startDownload: async (request) => { started.push(request.id); return { started: true }; }
+    };
+    const store = createQueueStore(platform, ref(new Set<string>()), () => {});
+    store.enqueue(songs[0]);
+    await store.setNetworkAvailable(false, defaultSettings);
+    await store.runNext(defaultSettings, true);
     expect(started).toEqual(['1']);
   });
 
