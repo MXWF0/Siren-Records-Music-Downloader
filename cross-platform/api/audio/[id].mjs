@@ -3,14 +3,10 @@ import {
   audioFileName,
   corsHeaders,
   enforceRequestPolicy,
-  fetchOfficialAudio,
-  findAlbumName,
-  getCatalog,
+  resolveOfficialAudio,
   sendJson,
-  validRangeHeader,
   validSongId
 } from '../../scripts/official-proxy.mjs';
-import { pipeLimitedResponse } from '../../scripts/proxy-stream.mjs';
 
 export default async function handler(request, response) {
   if (!await enforceRequestPolicy(request, response, 'audio', { count: request.method === 'GET' })) return;
@@ -37,42 +33,28 @@ export default async function handler(request, response) {
   const controller = new AbortController();
   response.on('close', () => controller.abort());
   try {
-    const { song, sourceUrl, upstream } = await fetchOfficialAudio(id, {
-      signal: controller.signal,
-      range: validRangeHeader(request.headers?.range)
-    });
-    let albumName = typeof song?.albumName === 'string' ? song.albumName : '';
-    if (!albumName && song?.albumCid) {
-      try { albumName = findAlbumName(await getCatalog(), song.albumCid); } catch { /* filename only */ }
-    }
-    const contentType = upstream.headers.get('content-type') || 'audio/wav';
-    const extension = audioExtension(contentType, sourceUrl);
-    const fileName = audioFileName(song, albumName, id, extension);
-    const contentLength = upstream.headers.get('content-length');
-    const contentRange = upstream.headers.get('content-range');
-    const acceptRanges = upstream.headers.get('accept-ranges');
-    response.statusCode = upstream.status === 206 ? 206 : 200;
+    const { song, sourceUrl } = await resolveOfficialAudio(id, { signal: controller.signal });
+    const extension = audioExtension('', sourceUrl);
+    const fileName = audioFileName(song, song?.albumName || '', id, extension);
+
+    // Do not proxy the audio body through Vercel. The official CDN supports
+    // CORS and Range requests, so both the Web Worker and browser download
+    // manager can follow this short-lived redirect and receive bytes directly.
+    response.statusCode = 307;
     for (const [name, value] of Object.entries({
-      'Content-Type': contentType,
+      Location: sourceUrl,
       'Content-Disposition': `attachment; filename="${id}.${extension}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-      ...(contentLength ? { 'Content-Length': contentLength } : {}),
-      ...(contentRange ? { 'Content-Range': contentRange } : {}),
-      ...(acceptRanges ? { 'Accept-Ranges': acceptRanges } : { 'Accept-Ranges': 'bytes' }),
+      'X-Siren-Audio-Delivery': 'official-cdn-redirect',
       'Cache-Control': 'no-store',
       ...corsHeaders(request)
     })) response.setHeader(name, value);
-    if (!upstream.body) {
-      response.end();
-      return;
-    }
-    const maxBytes = Number.parseInt(process.env.SIREN_MAX_AUDIO_BYTES || '', 10) || 1024 * 1024 * 1024;
-    await pipeLimitedResponse(upstream.body, response, maxBytes);
+    response.end();
   } catch (error) {
     if (response.headersSent || response.destroyed) {
       response.destroy();
       return;
     }
-    console.error('[SirenRecords] serverless audio proxy failed', error);
+    console.error('[SirenRecords] serverless audio URL resolution failed', error);
     sendJson(response, 502, { error: '音频下载服务暂时不可用，请稍后重试' }, request);
   }
 }

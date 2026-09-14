@@ -18,6 +18,8 @@ export default async function handler(request, response) {
     for (const [name, value] of Object.entries({
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
+      'CDN-Cache-Control': 'public, s-maxage=300, stale-while-revalidate=1800',
+      'Vercel-CDN-Cache-Control': 'public, s-maxage=300, stale-while-revalidate=1800',
       ...corsHeaders(request)
     })) response.setHeader(name, value);
     if (request.method === 'HEAD') response.end();

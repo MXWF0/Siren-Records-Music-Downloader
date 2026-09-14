@@ -1,0 +1,14 @@
+name = "siren-records-api"
+main = "src/index.mjs"
+compatibility_date = "2026-09-14"
+workers_dev = true
+
+[vars]
+OFFICIAL_API_BASE = "https://monster-siren.hypergryph.com/api"
+ALLOWED_ORIGINS = "https://mxwf0.github.io,http://127.0.0.1:4173,http://localhost:4173,http://127.0.0.1:1420,http://localhost:1420"
+AUDIO_HOSTS = "hycdn.cn"
+AUDIO_RATE_LIMIT = "8"
+CATALOG_RATE_LIMIT = "60"
+RATE_LIMIT_WINDOW_MS = "60000"
+UPSTREAM_TIMEOUT_MS = "10000"
+MAX_METADATA_BYTES = "4194304"

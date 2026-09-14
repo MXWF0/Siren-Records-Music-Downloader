@@ -9,6 +9,7 @@ import {
   fetchOfficialSong,
   isOriginAllowed,
   isTrustedProxy,
+  resolveOfficialAudio,
   resetRateLimitsForTests,
   validRangeHeader,
   validSongId
@@ -101,6 +102,20 @@ describe('proxy request policy', () => {
       'https://monster-siren.hypergryph.com/api/song/779442',
       'https://res01.hycdn.cn/fresh/audio.wav'
     ]);
+  });
+
+  it('can resolve a trusted CDN URL without downloading audio bytes', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: {
+      cid: '779442',
+      name: 'Test',
+      sourceUrl: 'https://res01.hycdn.cn/fresh/audio.wav'
+    } }), { headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(resolveOfficialAudio('779442')).resolves.toMatchObject({
+      sourceUrl: 'https://res01.hycdn.cn/fresh/audio.wav'
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects audio hosts outside the configured CDN allowlist', async () => {

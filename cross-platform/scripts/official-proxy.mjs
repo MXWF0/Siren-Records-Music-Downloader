@@ -253,13 +253,24 @@ export async function getCatalog() {
   return catalogRequest;
 }
 
-export async function fetchOfficialAudio(id, { signal, range = '' } = {}) {
-  let song = (await requestOfficial(`/song/${encodeURIComponent(id)}`, { signal }))?.data;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const sourceUrl = song?.sourceUrl;
-    if (typeof sourceUrl !== 'string' || !sourceUrl) throw new Error('歌曲暂时没有可用的音频地址');
-    if (!isAllowedAudioUrl(sourceUrl)) throw new Error('官网返回了不受信任的音频地址');
+/**
+ * Resolve the current official CDN URL without transferring audio bytes.
+ * Serverless deployments use this result for a redirect so large files travel
+ * directly from the official CDN to the user's browser.
+ */
+export async function resolveOfficialAudio(id, { signal } = {}) {
+  const song = (await requestOfficial(`/song/${encodeURIComponent(id)}`, { signal }))?.data;
+  const sourceUrl = song?.sourceUrl;
+  if (!song || typeof song !== 'object' || typeof sourceUrl !== 'string' || !sourceUrl) {
+    throw new Error('歌曲暂时没有可用的音频地址');
+  }
+  if (!isAllowedAudioUrl(sourceUrl)) throw new Error('官网返回了不受信任的音频地址');
+  return { song, sourceUrl };
+}
 
+export async function fetchOfficialAudio(id, { signal, range = '' } = {}) {
+  let { song, sourceUrl } = await resolveOfficialAudio(id, { signal });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     // The timeout protects connection establishment; cancellation remains
     // attached to the caller while a large audio stream is being forwarded.
     const timeoutController = new AbortController();
@@ -288,7 +299,7 @@ export async function fetchOfficialAudio(id, { signal, range = '' } = {}) {
     }
     if (attempt === 0 && [401, 403, 404].includes(upstream.status)) {
       await upstream.body?.cancel().catch(() => undefined);
-      song = (await requestOfficial(`/song/${encodeURIComponent(id)}`, { signal }))?.data;
+      ({ song, sourceUrl } = await resolveOfficialAudio(id, { signal }));
       continue;
     }
     throw new Error(`官网音频服务返回 HTTP ${upstream.status}`);

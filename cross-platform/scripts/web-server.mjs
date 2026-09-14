@@ -7,15 +7,12 @@ import {
   audioFileName,
   corsHeaders,
   enforceRequestPolicy,
-  fetchOfficialAudio,
+  resolveOfficialAudio,
   fetchOfficialSong,
-  findAlbumName,
   getCatalog,
   sendJson,
-  validRangeHeader,
   validSongId
 } from './official-proxy.mjs';
-import { pipeLimitedResponse } from './proxy-stream.mjs';
 
 const scriptDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const projectDirectory = resolve(scriptDirectory, '..');
@@ -56,6 +53,8 @@ async function handleCatalog(request, response, headOnly) {
     response.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
+      'CDN-Cache-Control': 'public, s-maxage=300, stale-while-revalidate=1800',
+      'Vercel-CDN-Cache-Control': 'public, s-maxage=300, stale-while-revalidate=1800',
       ...corsHeaders(request)
     });
     response.end(headOnly ? undefined : JSON.stringify(payload));
@@ -83,42 +82,23 @@ async function handleAudio(request, response, rawId) {
   const controller = new AbortController();
   response.on('close', () => controller.abort());
   try {
-    const { song, sourceUrl, upstream } = await fetchOfficialAudio(id, {
-      signal: controller.signal,
-      range: validRangeHeader(request.headers.range)
-    });
-    let albumName = typeof song?.albumName === 'string' ? song.albumName : '';
-    if (!albumName && song?.albumCid) {
-      try {
-        albumName = findAlbumName(await getCatalog(), song.albumCid);
-      } catch {
-        // Album metadata only affects the suggested filename.
-      }
-    }
-
-    const contentType = upstream.headers.get('content-type') || 'audio/wav';
-    const extension = audioExtension(contentType, sourceUrl);
-    const fileName = audioFileName(song, albumName, id, extension);
-    const contentLength = upstream.headers.get('content-length');
-    const contentRange = upstream.headers.get('content-range');
-    const acceptRanges = upstream.headers.get('accept-ranges');
-    response.writeHead(upstream.status === 206 ? 206 : 200, {
-      'Content-Type': contentType,
+    const { song, sourceUrl } = await resolveOfficialAudio(id, { signal: controller.signal });
+    const extension = audioExtension('', sourceUrl);
+    const fileName = audioFileName(song, song?.albumName || '', id, extension);
+    response.writeHead(307, {
+      Location: sourceUrl,
       'Content-Disposition': `attachment; filename="${id}.${extension}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-      ...(contentLength ? { 'Content-Length': contentLength } : {}),
-      ...(contentRange ? { 'Content-Range': contentRange } : {}),
-      ...(acceptRanges ? { 'Accept-Ranges': acceptRanges } : { 'Accept-Ranges': 'bytes' }),
+      'X-Siren-Audio-Delivery': 'official-cdn-redirect',
       'Cache-Control': 'no-store',
       ...corsHeaders(request)
     });
-    const maxBytes = Number.parseInt(process.env.SIREN_MAX_AUDIO_BYTES || '', 10) || 1024 * 1024 * 1024;
-    await pipeLimitedResponse(upstream.body, response, maxBytes);
+    response.end();
   } catch (error) {
     if (response.destroyed || response.headersSent) {
       response.destroy();
       return;
     }
-    console.error('[SirenRecords] audio proxy failed', error);
+    console.error('[SirenRecords] audio URL resolution failed', error);
     sendJson(response, 502, { error: '音频下载服务暂时不可用，请稍后重试' }, request);
   }
 }
@@ -157,8 +137,10 @@ async function serveStatic(response, pathname, headOnly) {
     response.writeHead(200, {
       'Content-Type': type,
       'Content-Length': metadata.size,
-      'Cache-Control': 'public, max-age=3600',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hycdn.cn; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      'Cache-Control': requestPath.startsWith('/assets/')
+        ? 'public, max-age=31536000, immutable'
+        : 'public, max-age=300',
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.hycdn.cn; font-src 'self'; connect-src 'self' https://*.hycdn.cn; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'

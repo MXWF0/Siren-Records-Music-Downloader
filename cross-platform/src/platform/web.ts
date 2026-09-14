@@ -157,6 +157,34 @@ let detectedProxyBase: string | null | undefined;
 let detectedProxyPromise: Promise<string> | undefined;
 let detectedProxyCheckedAt = 0;
 let recentProxyFailure: { message: string; checkedAt: number } | null = null;
+let downloadServiceWorkerPromise: Promise<void> | undefined;
+let downloadServiceWorkerReady = false;
+
+async function prepareBrowserDownloadManager() {
+  if (downloadServiceWorkerPromise) return downloadServiceWorkerPromise;
+  downloadServiceWorkerPromise = (async () => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined' || !navigator.serviceWorker) return;
+    if (!/^https?:$/.test(location.protocol)) return;
+    try {
+      const workerUrl = new URL('download-sw.js', document.baseURI);
+      const scopeUrl = new URL('./', document.baseURI);
+      await navigator.serviceWorker.register(workerUrl.href, { scope: scopeUrl.pathname });
+      await Promise.race([
+        navigator.serviceWorker.ready.then(() => { downloadServiceWorkerReady = true; }),
+        delay(3_000)
+      ]);
+    } catch (error) {
+      // Direct browser handoff remains available when enterprise policy or
+      // private browsing disables service workers.
+      console.warn('[SirenRecords] download service worker unavailable', error);
+    }
+  })();
+  return downloadServiceWorkerPromise;
+}
+
+// Register during application startup so a later browser-managed download is
+// not forced onto a cross-origin anchor while the worker is still activating.
+if (typeof window !== 'undefined') void prepareBrowserDownloadManager();
 
 function isCatalogPayload(value: unknown): value is { albums: unknown; songs: unknown } {
   return Boolean(value && typeof value === 'object' && 'albums' in value && 'songs' in value);
@@ -303,7 +331,9 @@ async function requestCatalog(endpoint: string) {
     const timeout = globalThis.setTimeout(() => controller.abort(), 8_000);
     try {
       const response = await fetch(endpoint, {
-        cache: 'no-store',
+        // Catalogue responses are public and carry a short browser/CDN TTL.
+        // Allow both caches to absorb repeated page loads and cold starts.
+        cache: 'default',
         credentials: 'omit',
         headers: { Accept: 'application/json' },
         signal: controller.signal
@@ -419,6 +449,24 @@ export function friendlyDownloadError(error: unknown, staticFileMode: boolean) {
 }
 
 export function handOffBrowserManagedDownload(endpoint: string, suggestedName: string) {
+  const controller = typeof navigator !== 'undefined' && navigator.serviceWorker
+    ? navigator.serviceWorker.controller
+    : null;
+  if ((controller || downloadServiceWorkerReady) && typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
+    const bridgeUrl = new URL('__siren_download__', document.baseURI);
+    bridgeUrl.searchParams.set('source', new URL(endpoint, location.href).href);
+    bridgeUrl.searchParams.set('filename', suggestedName);
+    // Firefox does not reliably treat a top-level Service Worker response as
+    // a download. A hidden navigation frame lets its download manager accept
+    // the streamed attachment without buffering it in application memory.
+    const frame = document.createElement('iframe');
+    frame.hidden = true;
+    frame.title = '下载传输';
+    frame.src = bridgeUrl.href;
+    document.body.append(frame);
+    return;
+  }
+
   const anchor = document.createElement('a');
   anchor.href = endpoint;
   anchor.download = suggestedName;
@@ -1061,6 +1109,7 @@ export const webPlatform: PlatformBridge = {
   },
 
   async getSettings() {
+    await prepareBrowserDownloadManager();
     try { return readStoredSettings(); } catch { return { ...browserDefaults }; }
   },
 
@@ -1093,7 +1142,7 @@ export const webPlatform: PlatformBridge = {
 
   async loadSongDetails(id) {
     const apiBase = await resolveDownloadProxy();
-    const response = await fetch(resolveApiUrl(`/api/song?id=${encodeURIComponent(id)}`, apiBase), { cache: 'no-store' });
+    const response = await fetch(resolveApiUrl(`/api/song?id=${encodeURIComponent(id)}`, apiBase), { cache: 'default' });
     if (!response.ok) throw new Error(await readError(response, `歌曲详情请求失败（HTTP ${response.status}）`));
     return (await response.json() as { data?: unknown }).data;
   },
