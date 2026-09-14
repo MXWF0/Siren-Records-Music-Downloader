@@ -25,7 +25,11 @@ export default async function handler(request, response) {
     return;
   }
   try {
-    sendJson(response, 200, { data: await fetchOfficialSong(id, { includeDuration: true }) }, request);
+    sendJson(response, 200, { data: await fetchOfficialSong(id, { includeDuration: true }) }, request, {
+      'Cache-Control': 'public, max-age=300, stale-while-revalidate=3600',
+      'CDN-Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+      'Vercel-CDN-Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400'
+    });
   } catch (error) {
     console.error('[SirenRecords] serverless song proxy failed', error);
     sendJson(response, 502, { error: '歌曲详情暂时不可用，请稍后重试' }, request);

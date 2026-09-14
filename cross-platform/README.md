@@ -1,6 +1,6 @@
 # 塞壬唱片下载器跨平台版
 
-当前版本：<!-- app-version:start -->v1.4.2<!-- app-version:end -->。这是与旧 Electron 版隔离的 Vue 3 + TypeScript + Tauri 2 项目；旧版位于 `resources/app`，继续使用 v5.x 版本线，本目录使用 v1.x。
+当前版本：<!-- app-version:start -->v1.5.0<!-- app-version:end -->。这是与旧 Electron 版隔离的 Vue 3 + TypeScript + Tauri 2 项目；旧版位于 `resources/app`，继续使用 v5.x 版本线，本目录使用 v1.x。
 
 本项目从塞壬唱片官网实时读取公开目录，并保存官网提供的原始音频格式。不会把 MP3、AAC 等有损音频转成 WAV 后称为无损。使用者应遵守当地法律、官网条款与版权规则，下载内容仅限个人学习和研究用途。
 
@@ -9,7 +9,7 @@
 | 功能 | Web | Windows / macOS / Linux |
 |---|---|---|
 | 官网目录、搜索、详情、队列 | 支持 | 支持 |
-| 下载方式 | 实时代理后交给浏览器，或 Chromium 文件流写入 | Rust 直接流式写入 |
+| 下载方式 | 实时解析后直连官网 CDN；Chromium 可按块写入文件 | Rust 直接流式写入 |
 | 保存位置 | 由浏览器管理 | 可选择并持久化下载目录 |
 | 断点恢复 | 文件流写入时支持单 Range 重试；浏览器接管由浏览器决定 | `.part`、ETag、Last-Modified、Range |
 | 已下载判断 | 本设备确认完成的记录 | manifest 与真实文件大小校验 |
@@ -24,14 +24,16 @@ flowchart TD
   UI["Vue 3 + TypeScript"] --> BRIDGE["PlatformBridge"]
   BRIDGE --> WEB["Web 浏览器"]
   BRIDGE --> TAURI["Tauri 2"]
-  WEB --> PROXY["Node / Serverless 实时代理"]
+  WEB --> RESOLVER["Node / Serverless 地址解析"]
   TAURI --> RUST["Rust 下载模块"]
-  PROXY --> API["塞壬唱片 API 与 CDN"]
+  RESOLVER --> API["塞壬唱片 API"]
+  WEB --> CDN["塞壬唱片 CDN"]
+  API --> CDN
   RUST --> API
   RUST --> FILES["原子文件 + manifest + .part"]
 ```
 
-前端不使用目录快照中的临时 `sourceUrl`。每次 Web 下载请求 `GET /api/audio?id=<CID>`；代理实时获取最新签名并直接流式转发，不把签名地址暴露给浏览器。
+前端不使用目录快照中的临时 `sourceUrl`。每次 Web 下载请求 `GET /api/audio?id=<CID>`；服务端只实时解析、校验最新地址并返回 `307`，音频字节由官网 CDN 直接发送给浏览器，不经过 Vercel Function。下载地址不缓存，目录和已移除音频地址的歌曲详情才使用短时 CDN 缓存。
 
 ## 开发与验证
 
@@ -68,11 +70,25 @@ docker build -t siren-records-web .
 docker run --rm -p 4173:4173 siren-records-web
 ```
 
-运行镜像包含 `web-server.mjs`、`official-proxy.mjs` 与流量限制模块，并提供 `/api/health`。
+运行镜像包含 `web-server.mjs`、`official-proxy.mjs` 与流量限制模块，并提供 `/api/health`。音频接口同样只返回官网 CDN 重定向，不在容器内中转大文件。
 
 ### Vercel / Serverless
 
 把 `cross-platform` 设为项目根目录部署。必须同时发布 `api/` 和静态构建，不可只上传 `dist`。部署后检查 `/api/health`、`/api/catalog` 与 `/api/audio?id=<有效CID>`。
+
+### Cloudflare Workers（独立 Web 代理）
+
+`cloudflare-worker/` 是独立的 Worker 项目，不会替换或删除 `api/` 中的 Vercel 代码。它只请求官网元数据并返回音频 `307` 重定向，音频正文由官网 CDN 直接发送给浏览器。
+
+```powershell
+npx wrangler login
+npx wrangler dev --config cloudflare-worker/wrangler.toml
+npx wrangler deploy --config cloudflare-worker/wrangler.toml
+```
+
+先用 `wrangler dev` 检查 `/api/health`、`/api/catalog` 和 `/api/audio?id=<有效CID>`；确认音频接口返回零正文 `307` 后，再把 Worker 的 `workers.dev` 地址设置为 GitHub Actions 仓库变量 `SIREN_API_BASE_URL`，重新发布 Pages。未设置该变量前，前端不会自动切换到 Worker。
+
+Worker 的 `ALLOWED_ORIGINS`、`AUDIO_HOSTS` 和限流变量位于 `cloudflare-worker/wrangler.toml`，生产环境应改为实际 Pages 域名。Worker 内置限流只在单个隔离实例内生效，仍应按需配置 Cloudflare WAF/Rate Limiting。
 
 ### GitHub Pages 或其他静态站点
 
@@ -86,14 +102,13 @@ GitHub Pages 工作流会把它写入运行时配置。直接双击 `index.html`
 
 ## 代理与隐私
 
-代理只处理歌曲 CID、必要请求头和音频流，不保存音频内容。桌面 manifest 仅保存在本机应用数据目录，包含 CID、文件路径、大小和完成时间；Web 下载记录保存在当前浏览器的 IndexedDB/localStorage。
+地址解析服务只处理歌曲 CID 和必要请求头，不接收、不转发也不保存音频内容。短时官网 CDN 地址会通过 HTTPS 重定向发送给发起下载的浏览器。桌面 manifest 仅保存在本机应用数据目录，包含 CID、文件路径、大小和完成时间；Web 下载记录保存在当前浏览器的 IndexedDB/localStorage。
 
 生产环境建议配置：
 
 ```text
 SIREN_ALLOWED_ORIGINS=https://你的网页域名
 SIREN_AUDIO_HOSTS=hycdn.cn
-SIREN_MAX_AUDIO_BYTES=1073741824
 SIREN_AUDIO_RATE_LIMIT=8
 SIREN_CATALOG_RATE_LIMIT=60
 SIREN_RATE_LIMIT_WINDOW_MS=60000

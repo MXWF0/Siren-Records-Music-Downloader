@@ -57,27 +57,57 @@ test('browser-managed album downloads wait for a fresh user gesture between file
   await page.addInitScript(() => {
     Object.defineProperty(window, 'showDirectoryPicker', { value: undefined, configurable: true });
     Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
+    Object.defineProperty(window, '__downloadClicks', { value: 0, writable: true, configurable: true });
+    const originalClick = HTMLAnchorElement.prototype.click;
+    const originalAppend = Element.prototype.append;
+    HTMLAnchorElement.prototype.click = function click() {
+      if (this.href.includes('/api/audio') || this.href.includes('/__siren_download__')) {
+        (window as Window & { __downloadClicks: number }).__downloadClicks += 1;
+        return;
+      }
+      originalClick.call(this);
+    };
+    Element.prototype.append = function append(...nodes) {
+      const downloadFrame = nodes.find((node) => node instanceof HTMLIFrameElement
+        && node.src.includes('/__siren_download__'));
+      if (downloadFrame) {
+        (window as Window & { __downloadClicks: number }).__downloadClicks += 1;
+        return;
+      }
+      originalAppend.apply(this, nodes);
+    };
   });
-  await page.route('**/api/audio?**', (route) => route.fulfill({
-    status: 200,
-    headers: {
-      'Content-Type': 'audio/wav',
-      'Content-Disposition': 'attachment; filename="test.wav"'
-    },
-    body: 'RIFFtest'
-  }));
   await page.goto('/');
 
-  const firstDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: '下载本组' }).click();
-  await (await firstDownload).cancel();
+  await page.waitForFunction(() => (window as Window & { __downloadClicks?: number }).__downloadClicks === 1);
 
   await page.getByRole('button', { name: /下载队列/ }).click();
   const resume = page.getByRole('button', { name: '继续下载下一首' });
   await expect(resume).toBeVisible();
 
-  const secondDownload = page.waitForEvent('download');
   await resume.click();
-  await (await secondDownload).cancel();
+  await page.waitForFunction(() => (window as Window & { __downloadClicks?: number }).__downloadClicks === 2);
   await expect(resume).toBeVisible();
+});
+
+test('browser download bridge streams a same-origin response as an attachment', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => navigator.serviceWorker?.ready);
+  if (!(await page.evaluate(() => Boolean(navigator.serviceWorker?.controller)))) await page.reload();
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller));
+  const download = page.waitForEvent('download');
+  await page.evaluate(() => {
+    const source = new URL('index.html', document.baseURI).href;
+    const bridge = new URL('__siren_download__', document.baseURI);
+    bridge.searchParams.set('source', source);
+    bridge.searchParams.set('filename', 'Siren Test.wav');
+    const frame = document.createElement('iframe');
+    frame.hidden = true;
+    frame.src = bridge.href;
+    document.body.append(frame);
+  });
+  const item = await download;
+  expect(item.suggestedFilename()).toBe('Siren Test.wav');
+  await item.cancel();
 });

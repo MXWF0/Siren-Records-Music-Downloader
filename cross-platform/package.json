@@ -1,7 +1,7 @@
 {
   "name": "siren-records-cross-platform",
   "private": true,
-  "version": "1.4.2",
+  "version": "1.5.0",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -21,7 +21,7 @@
     "test:e2e": "playwright test",
     "test:docker": "node scripts/docker-smoke.mjs",
     "typecheck": "vue-tsc --noEmit",
-    "check:scripts": "node --check scripts/official-proxy.mjs && node --check scripts/proxy-stream.mjs && node --check scripts/web-server.mjs && node --check scripts/docker-smoke.mjs && node --check scripts/sync-version.mjs && node --check api/health.mjs && node --check api/catalog.mjs && node --check api/song.mjs && node --check api/audio.mjs && node --check api/audio/[id].mjs",
+    "check:scripts": "node --check public/download-sw.js && node --check cloudflare-worker/src/index.mjs && node --check scripts/official-proxy.mjs && node --check scripts/proxy-stream.mjs && node --check scripts/web-server.mjs && node --check scripts/docker-smoke.mjs && node --check scripts/sync-version.mjs && node --check api/health.mjs && node --check api/catalog.mjs && node --check api/song.mjs && node --check api/audio.mjs && node --check api/audio/[id].mjs",
     "version:sync": "node scripts/sync-version.mjs",
     "version:check": "node scripts/sync-version.mjs --check",
     "check:fast": "npm run version:check && npm test && npm run check:scripts",
