@@ -82,13 +82,15 @@ async function openDownloadDirectory() {
 function enqueue(song: Song, force = false) {
   const added = queue.enqueue(song, force);
   setStatus(added ? `已加入《${song.name}》` : '歌曲已在队列中或已经下载', added ? 'success' : 'normal');
-  if (added && online.value) void queue.runNext(settings, true);
+  // navigator.onLine can be stale on mobile browsers; the user click is the
+  // authoritative signal to attempt the download and surface a real error.
+  if (added) void queue.runNext(settings, true);
 }
 
 function enqueueMany(songs: Song[], force = false) {
   const count = queue.enqueueMany(songs, force);
   setStatus(count ? `已加入 ${count} 首歌曲到下载队列` : '所选歌曲已在队列中或已经下载', count ? 'success' : 'normal');
-  if (count && online.value) void queue.runNext(settings, true);
+  if (count) void queue.runNext(settings, true);
 }
 
 function updateNetworkState() {
