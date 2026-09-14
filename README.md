@@ -14,8 +14,6 @@ web版已做成网站，复制链接后到浏览器直接打开，理论支持�
 部分界面与功能和原版不同
 https://mxwf0.github.io/Siren-Records-Music-Downloader/
 
-目前该web版后端出现一些问题，将暂时关闭下载功能，
-
 Windows用户建议优先使用下方的 v5.5 版本。
 
 v5.5
