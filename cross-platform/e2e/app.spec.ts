@@ -53,6 +53,17 @@ test('mobile song actions and download footer keep touch-sized targets', async (
   expect((await queue.boundingBox())?.height).toBeGreaterThanOrEqual(43.9);
 });
 
+test('Web download mode can be selected and persists after reload', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '关于', exact: true }).click();
+  const mode = page.getByRole('combobox', { name: '网页下载方式' });
+  await mode.selectOption('browser');
+  await expect(mode).toHaveValue('browser');
+  await page.reload();
+  await page.getByRole('button', { name: '关于', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: '网页下载方式' })).toHaveValue('browser');
+});
+
 test('browser-managed album downloads wait for a fresh user gesture between files', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, 'showDirectoryPicker', { value: undefined, configurable: true });

@@ -9,13 +9,15 @@ describe('normalizeSettings', () => {
   it('preserves supported user choices', () => {
     expect(normalizeSettings({
       separateDirectory: false,
-      groupByDownload: false
+      groupByDownload: false,
+      webDownloadMode: 'browser'
     })).toEqual({
-      schemaVersion: 3,
+      schemaVersion: 4,
       downloadDirectory: '',
       separateDirectory: false,
       groupByDownload: false,
-      concurrentDownloads: 1
+      concurrentDownloads: 1,
+      webDownloadMode: 'browser'
     });
   });
 
@@ -29,5 +31,9 @@ describe('normalizeSettings', () => {
       ...defaultSettings,
       downloadDirectory: 'D:\\Music'
     });
+  });
+
+  it('migrates unknown Web download modes to automatic selection', () => {
+    expect(normalizeSettings({ webDownloadMode: 'invalid' }).webDownloadMode).toBe('auto');
   });
 });

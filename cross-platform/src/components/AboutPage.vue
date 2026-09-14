@@ -13,6 +13,21 @@ const emit = defineEmits<{
 function updateConcurrency(event: Event) {
   emit('updateSettings', { concurrentDownloads: Number((event.target as HTMLSelectElement).value) });
 }
+
+function updateWebDownloadMode(event: Event) {
+  const value = (event.target as HTMLSelectElement).value as AppSettings['webDownloadMode'];
+  emit('updateSettings', { webDownloadMode: value });
+}
+
+function webDownloadModeDescription() {
+  if (props.settings.webDownloadMode === 'stream') {
+    return 'Chrome、Edge 可选择一次文件夹，并连续保存整张专辑。';
+  }
+  if (props.settings.webDownloadMode === 'browser') {
+    return '每首歌曲交给浏览器；批量下载时可能需要逐项继续。';
+  }
+  return '自动优先使用应用流式下载，不支持时交给浏览器。';
+}
 </script>
 
 <template>
@@ -38,6 +53,14 @@ function updateConcurrency(event: Event) {
         </div>
         <ToggleSwitch v-if="props.desktop" :model-value="props.settings.separateDirectory" label="按专辑文件夹保存音乐" description="桌面版下载时按专辑归档。" class="display-toggle" @update:model-value="emit('updateSettings', { separateDirectory: $event })" />
         <ToggleSwitch :model-value="props.settings.groupByDownload" label="按已下载状态分类显示" description="分开展示已下载和未下载歌曲。" class="display-toggle" @update:model-value="emit('updateSettings', { groupByDownload: $event })" />
+        <label v-if="!props.desktop" class="concurrency-setting download-mode-setting">
+          <span><strong>网页下载方式</strong><small>{{ webDownloadModeDescription() }}</small></span>
+          <select name="web-download-mode" :value="props.settings.webDownloadMode" @change="updateWebDownloadMode">
+            <option value="auto">自动选择</option>
+            <option value="stream">应用流式下载</option>
+            <option value="browser">浏览器下载</option>
+          </select>
+        </label>
         <label class="concurrency-setting">
           <span><strong>同时下载任务</strong><small>可设置 1～3 个，默认同时下载 1 个。</small></span>
           <select name="concurrent-downloads" :value="props.settings.concurrentDownloads" @change="updateConcurrency">

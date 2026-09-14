@@ -1,4 +1,4 @@
-import type { AppSettings } from '../settings';
+import type { AppSettings, WebDownloadMode } from '../settings';
 
 export interface PlatformInfo {
   os: string;
@@ -20,6 +20,8 @@ export interface DownloadRequest {
   fileName?: string;
   /** Human-readable song name used by Web download records. */
   title?: string;
+  /** Web-only destination strategy; desktop downloads ignore this field. */
+  webDownloadMode?: WebDownloadMode;
 }
 
 export interface DownloadProgress {

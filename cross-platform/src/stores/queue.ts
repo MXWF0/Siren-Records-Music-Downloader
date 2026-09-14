@@ -222,16 +222,21 @@ export function createQueueStore(
       persist();
     }
     if ((!networkAvailable && !userInitiated) || Date.now() < rateLimitUntil) return;
-    if (platform.requiresUserGestureForDownload && !userInitiated && pending.value.length) {
+    const browserManaged = platform.kind === 'web' && (
+      settings.webDownloadMode === 'browser'
+      || (settings.webDownloadMode === 'auto' && platform.requiresUserGestureForDownload)
+    );
+    if (browserManaged && !userInitiated && pending.value.length) {
       awaitingBrowserGesture = true;
       notify('当前浏览器要求逐项确认下载，请点击“继续下载下一首”', 'normal');
       return;
     }
     if (userInitiated) awaitingBrowserGesture = false;
-    if (platform.kind === 'web' && (platform.maxConcurrentDownloads ?? 1) === 1 && activeIds.size > 0) return;
+    const platformLimit = browserManaged ? 1 : (platform.maxConcurrentDownloads ?? 3);
+    if (platform.kind === 'web' && platformLimit === 1 && activeIds.size > 0) return;
     const requestedLimit = Number(settings.concurrentDownloads);
     const configuredLimit = Number.isInteger(requestedLimit) ? Math.min(3, Math.max(1, requestedLimit)) : 1;
-    const limit = Math.min(configuredLimit, platform.maxConcurrentDownloads ?? 3);
+    const limit = Math.min(configuredLimit, platformLimit);
     while (activeIds.size + startingIds.size < limit) {
       const next = pending.value.find((item) => !startingIds.has(item.id));
       if (!next) break;
@@ -245,7 +250,8 @@ export function createQueueStore(
           downloadDirectory: settings.downloadDirectory,
           separateDirectory: settings.separateDirectory,
           fileName: next.fileName,
-          title: next.title
+          title: next.title,
+          ...(platform.kind === 'web' ? { webDownloadMode: settings.webDownloadMode } : {})
         });
         if (!result.started) throw new Error('下载任务未能启动');
         startingIds.delete(next.id);
@@ -253,14 +259,14 @@ export function createQueueStore(
           activeIds.add(next.id);
           notify(`正在下载《${next.title}》`);
         }
-        if (platform.kind === 'web' && (platform.maxConcurrentDownloads ?? 1) === 1) break;
+        if (platform.kind === 'web' && platformLimit === 1) break;
       } catch (error) {
         startingIds.delete(next.id);
         next.state = 'failed';
         next.message = error instanceof Error ? error.message : '无法启动下载';
         notify(next.message, 'error');
         persist();
-        if (platform.kind === 'web' && (platform.maxConcurrentDownloads ?? 1) === 1) break;
+        if (platform.kind === 'web' && platformLimit === 1) break;
       }
     }
   }

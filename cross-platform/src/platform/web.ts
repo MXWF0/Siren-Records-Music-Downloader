@@ -1,5 +1,5 @@
 import bundledCatalog from '../catalog-cache.json';
-import { defaultSettings, normalizeSettings, type AppSettings } from '../settings';
+import { defaultSettings, normalizeSettings, type AppSettings, type WebDownloadMode } from '../settings';
 import type {
   DownloadEvents,
   DownloadRequest,
@@ -114,12 +114,14 @@ interface ActiveDownload {
   controller: AbortController;
   worker?: Worker;
   fileHandlePromise: Promise<FileHandleLike | null>;
+  downloadMode: 'stream' | 'browser';
 }
 
 const activeDownloads = new Map<string, ActiveDownload>();
 let savePickerAttempted = false;
 let downloadDirectoryHandle: DirectoryHandleLike | null = null;
 let directorySelectionPromise: Promise<DirectoryHandleLike | null> | null = null;
+let selectedWebDownloadMode: WebDownloadMode = browserDefaults.webDownloadMode;
 const bundledCatalogPayload = bundledCatalog as { albums: unknown; songs: unknown };
 
 export interface WebDownloadRecord {
@@ -158,7 +160,6 @@ let detectedProxyPromise: Promise<string> | undefined;
 let detectedProxyCheckedAt = 0;
 let recentProxyFailure: { message: string; checkedAt: number } | null = null;
 let downloadServiceWorkerPromise: Promise<void> | undefined;
-let downloadServiceWorkerReady = false;
 
 async function prepareBrowserDownloadManager() {
   if (downloadServiceWorkerPromise) return downloadServiceWorkerPromise;
@@ -170,7 +171,7 @@ async function prepareBrowserDownloadManager() {
       const scopeUrl = new URL('./', document.baseURI);
       await navigator.serviceWorker.register(workerUrl.href, { scope: scopeUrl.pathname });
       await Promise.race([
-        navigator.serviceWorker.ready.then(() => { downloadServiceWorkerReady = true; }),
+        navigator.serviceWorker.ready,
         delay(3_000)
       ]);
     } catch (error) {
@@ -452,7 +453,11 @@ export function handOffBrowserManagedDownload(endpoint: string, suggestedName: s
   const controller = typeof navigator !== 'undefined' && navigator.serviceWorker
     ? navigator.serviceWorker.controller
     : null;
-  if ((controller || downloadServiceWorkerReady) && typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
+  // `ready` only means that registration activated; the current page can
+  // still be uncontrolled on a first visit. Use the bridge only after the
+  // browser exposes a controller, otherwise let the native download manager
+  // handle the redirect instead of navigating to an unhandled route.
+  if (controller && typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
     const bridgeUrl = new URL('__siren_download__', document.baseURI);
     bridgeUrl.searchParams.set('source', new URL(endpoint, location.href).href);
     bridgeUrl.searchParams.set('filename', suggestedName);
@@ -495,6 +500,17 @@ function directoryPickerIsAvailable() {
 
 export function webDownloadConcurrency(savePicker: boolean, directoryPicker: boolean) {
   return savePicker || directoryPicker ? 3 : 1;
+}
+
+export function resolveWebDownloadMode(
+  mode: WebDownloadMode,
+  savePicker: boolean,
+  directoryPicker: boolean,
+  hasDirectoryHandle = false
+): 'stream' | 'browser' {
+  if (mode === 'browser') return 'browser';
+  if (mode === 'stream') return 'stream';
+  return savePicker || directoryPicker || hasDirectoryHandle ? 'stream' : 'browser';
 }
 
 export function browserDownloadNeedsUserGesture(
@@ -659,13 +675,13 @@ export function resolveWorkerAssetUrl(
   return rebasedUrl;
 }
 
-function usesBrowserManagedDownload() {
-  return browserDownloadNeedsUserGesture(
+function usesBrowserManagedDownload(mode = selectedWebDownloadMode) {
+  return resolveWebDownloadMode(
+    mode,
     pickerIsAvailable(),
     directoryPickerIsAvailable(),
-    Boolean(downloadDirectoryHandle),
-    savePickerAttempted
-  );
+    Boolean(downloadDirectoryHandle)
+  ) === 'browser';
 }
 
 function synchronousDownloadEndpoint(id: string) {
@@ -725,6 +741,70 @@ function workerErrorFromEvent(event: ErrorEvent, workerUrl?: URL) {
 
 function isDownloadWorkerMessage(value: unknown): value is DownloadWorkerMessage {
   return Boolean(value && typeof value === 'object' && typeof (value as { type?: unknown }).type === 'string');
+}
+
+/**
+ * Wait for the worker boot message before handing it a download request. Vite
+ * loads worker modules asynchronously, so checking a flag immediately after
+ * `new Worker()` can miss a 404 or module syntax error and leave the queue
+ * waiting forever. The short timeout also gives browsers with incomplete
+ * module-worker support a deterministic main-thread fallback.
+ */
+async function waitForWorkerReady(worker: Worker, workerUrl: URL, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timeout = globalThis.setTimeout(() => {
+      const error = new Error(`Worker 在 5 秒内未完成加载（${workerUrl.href}）`);
+      error.name = 'WorkerLoadTimeout';
+      rejectReady(error);
+    }, 5_000);
+
+    function cleanup() {
+      globalThis.clearTimeout(timeout);
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+      worker.removeEventListener('messageerror', onMessageError);
+      signal.removeEventListener('abort', onAbort);
+    }
+
+    function resolveReady() {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    }
+
+    function rejectReady(reason: unknown) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(normalizeDownloadError(reason));
+    }
+
+    function onMessage(event: MessageEvent<unknown>) {
+      if (isDownloadWorkerMessage(event.data) && event.data.type === 'ready') resolveReady();
+    }
+
+    function onError(event: ErrorEvent) {
+      rejectReady(workerErrorFromEvent(event, workerUrl));
+    }
+
+    function onMessageError() {
+      const error = new Error('Worker 消息无法结构化克隆');
+      error.name = 'DataCloneError';
+      rejectReady(error);
+    }
+
+    function onAbort() {
+      rejectReady(cancelledError());
+    }
+
+    worker.addEventListener('message', onMessage);
+    worker.addEventListener('error', onError);
+    worker.addEventListener('messageerror', onMessageError);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
 }
 
 async function runMainThreadFallback(
@@ -800,37 +880,24 @@ async function runWorkerDownload(
     return runMainThreadFallback(request, endpoint, active, fileHandle);
   }
 
-  // Attach listeners before awaiting createWritable(). A module Worker can
-  // fail while its script is loading, and that error must not disappear before
-  // the queue has installed its normal message handlers.
-  let bootstrapError: Error | null = null;
-  const onBootstrapError = (event: ErrorEvent) => {
-    const error = workerErrorFromEvent(event, workerUrl);
-    bootstrapError = error;
-    console.error('[SirenRecords] web download worker bootstrap error', {
+  let writer: FileWritableLike | null = null;
+  try {
+    await waitForWorkerReady(worker, workerUrl, active.controller.signal);
+  } catch (error) {
+    worker.terminate();
+    if (active.controller.signal.aborted) throw cancelledError();
+    const normalized = normalizeDownloadError(error);
+    console.error('[SirenRecords] web download worker bootstrap failed', {
       cid: request.id,
       endpoint,
       workerUrl: workerUrl.href,
-      errorType: error.name,
-      errorMessage: error.message,
-      errorStack: error.stack,
+      errorType: normalized.name,
+      errorMessage: normalized.message,
+      errorStack: normalized.stack,
       time: new Date().toISOString()
-    }, event.error || event);
-  };
-  const onBootstrapMessageError = (event: MessageEvent) => {
-    bootstrapError = new Error('Worker 消息无法结构化克隆');
-    bootstrapError.name = 'DataCloneError';
-    console.error('[SirenRecords] web download worker bootstrap message error', event);
-  };
-  worker.addEventListener('error', onBootstrapError);
-  worker.addEventListener('messageerror', onBootstrapMessageError);
-
-  let writer: FileWritableLike | null = null;
-  worker.removeEventListener('error', onBootstrapError);
-  worker.removeEventListener('messageerror', onBootstrapMessageError);
-  if (bootstrapError) {
-    worker.terminate();
-    throw bootstrapError;
+    }, error);
+    console.warn('[SirenRecords] falling back to main-thread streaming download');
+    return runMainThreadFallback(request, endpoint, active, fileHandle);
   }
   if (active.controller.signal.aborted) {
     worker.terminate();
@@ -1030,6 +1097,11 @@ async function downloadAudio(request: DownloadRequest, active: ActiveDownload) {
       ? resolveApiUrl(`/api/audio?id=${encodeURIComponent(request.id)}`, apiBase)
       : `/api/audio?id=${encodeURIComponent(request.id)}`;
     if (!fileHandle) {
+      if (active.downloadMode === 'stream') {
+        const error = new Error('应用流式下载未获得文件写入权限。请重新点击下载并选择文件夹，或在“关于”中切换为浏览器下载。');
+        error.name = 'NotAllowedError';
+        throw error;
+      }
       // A browser-managed download must be opened in the same user-activation
       // task as the click. If a picker failed asynchronously, ask for a new
       // click instead of silently triggering a download that WebKit will block.
@@ -1110,11 +1182,20 @@ export const webPlatform: PlatformBridge = {
 
   async getSettings() {
     await prepareBrowserDownloadManager();
-    try { return readStoredSettings(); } catch { return { ...browserDefaults }; }
+    try {
+      const settings = readStoredSettings();
+      selectedWebDownloadMode = settings.webDownloadMode;
+      return settings;
+    } catch {
+      selectedWebDownloadMode = browserDefaults.webDownloadMode;
+      return { ...browserDefaults };
+    }
   },
 
   async saveSettings(settings) {
-    localStorage.setItem(settingsStorageKey, JSON.stringify(normalizeSettings(settings)));
+    const normalized = normalizeSettings(settings);
+    selectedWebDownloadMode = normalized.webDownloadMode;
+    localStorage.setItem(settingsStorageKey, JSON.stringify(normalized));
   },
 
   async selectDirectory() {
@@ -1183,11 +1264,18 @@ export const webPlatform: PlatformBridge = {
   async startDownload(request) {
     if (activeDownloads.has(request.id)) throw new Error('该歌曲正在下载');
     const controller = new AbortController();
+    const requestedMode = request.webDownloadMode ?? selectedWebDownloadMode;
+    const downloadMode = resolveWebDownloadMode(
+      requestedMode,
+      pickerIsAvailable(),
+      directoryPickerIsAvailable(),
+      Boolean(downloadDirectoryHandle)
+    );
 
     // Safari, Firefox and most mobile browsers do not expose a writable file
     // picker. Trigger their download manager synchronously while the click is
     // still active; awaiting proxy detection first causes WebKit to block it.
-    if (usesBrowserManagedDownload()) {
+    if (downloadMode === 'browser') {
       if (!hasUserActivation()) {
         const error = new Error('浏览器需要用户激活后才能开始下载，请点击“继续下载下一首”');
         error.name = 'NotAllowedError';
@@ -1197,7 +1285,7 @@ export const webPlatform: PlatformBridge = {
       if (blockedProxy) throw new Error(friendlyDownloadError(blockedProxy, false));
       const { endpoint, staticFileMode } = synchronousDownloadEndpoint(request.id);
       if (staticFileMode) throw new Error(staticDownloadHint);
-      activeDownloads.set(request.id, { controller, fileHandlePromise: Promise.resolve(null) });
+      activeDownloads.set(request.id, { controller, fileHandlePromise: Promise.resolve(null), downloadMode });
       try {
         handOffBrowserManagedDownload(endpoint, request.fileName || `${request.id}.wav`);
       } catch (error) {
@@ -1209,6 +1297,7 @@ export const webPlatform: PlatformBridge = {
     }
     const active: ActiveDownload = {
       controller,
+      downloadMode,
       // Invoke this before the first await in the queue call so a real click's
       // user activation can reach showSaveFilePicker when available.
       fileHandlePromise: requestSaveFileHandle(request)

@@ -46,6 +46,7 @@ const currentProgress = computed(() => {
 const online = ref(typeof navigator === 'undefined' ? true : navigator.onLine);
 let saveQueue = Promise.resolve();
 let disposeDownloadEvents: (() => void) | undefined;
+let settingsChangedDuringInitialization = false;
 
 function setStatus(message: string, tone: 'normal' | 'success' | 'error' = 'normal') {
   status.value = message;
@@ -53,7 +54,15 @@ function setStatus(message: string, tone: 'normal' | 'success' | 'error' = 'norm
 }
 
 function updateSettings(changes: Partial<AppSettings>) {
-  Object.assign(settings, normalizeSettings({ ...settings, ...changes }));
+  const snapshot = normalizeSettings({ ...settings, ...changes });
+  if (!ready.value) {
+    settingsChangedDuringInitialization = true;
+    saveQueue = saveQueue
+      .catch(() => undefined)
+      .then(() => platform.saveSettings(snapshot))
+      .catch((error) => setStatus(error instanceof Error ? error.message : '设置保存失败', 'error'));
+  }
+  Object.assign(settings, snapshot);
   void queue.runNext(settings);
 }
 
@@ -128,8 +137,12 @@ async function initializeApp() {
     catalog.load(),
     platform.loadDownloadedIds()
   ]);
-  if (storedSettings.status === 'fulfilled') Object.assign(settings, storedSettings.value);
-  else setStatus('本地设置加载失败，但仍可继续使用', 'error');
+  if (storedSettings.status === 'fulfilled' && !settingsChangedDuringInitialization) {
+    Object.assign(settings, storedSettings.value);
+  }
+  else if (storedSettings.status === 'rejected') {
+    setStatus('本地设置加载失败，但仍可继续使用', 'error');
+  }
   if (info.status === 'fulfilled') platformInfo.value = info.value;
   if (downloaded.status === 'fulfilled') catalog.replaceDownloaded(downloaded.value);
   else if (platform.kind === 'tauri') catalog.replaceDownloaded([]);
@@ -143,6 +156,9 @@ async function initializeApp() {
     }
   }
   ready.value = true;
+  if (settingsChangedDuringInitialization) {
+    await saveQueue;
+  }
   let queueConnected = false;
   try {
     disposeDownloadEvents = await queue.connect();

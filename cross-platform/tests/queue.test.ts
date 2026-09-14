@@ -171,6 +171,21 @@ describe('queue store', () => {
     expect(store.pending.value.map((item) => item.id)).toEqual(['2']);
   });
 
+  it('honors an explicit browser mode even when file streaming is available', async () => {
+    const started: string[] = [];
+    const platform: PlatformBridge = {
+      ...webPreviewPlatform,
+      maxConcurrentDownloads: 3,
+      requiresUserGestureForDownload: false,
+      startDownload: async (request) => { started.push(request.id); return { started: true }; }
+    };
+    const store = createQueueStore(platform, ref(new Set<string>()), () => {});
+    store.enqueueMany(songs);
+    await store.runNext({ ...defaultSettings, webDownloadMode: 'browser', concurrentDownloads: 3 }, true);
+    expect(started).toEqual(['1']);
+    expect(store.pending.value.map((item) => item.id)).toEqual(['2']);
+  });
+
   it('waits for a new user gesture before handing off the next album track', async () => {
     let events: Parameters<PlatformBridge['listenDownloadEvents']>[0] | undefined;
     const started: string[] = [];

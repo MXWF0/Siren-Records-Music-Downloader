@@ -8,6 +8,7 @@ import {
   normalizeApiBase,
   resolveApiUrl,
   resolveDownloadProxy,
+  resolveWebDownloadMode,
   rangeHeaderForOffset,
   responseFileName,
   resolveWorkerAssetUrl,
@@ -22,6 +23,13 @@ describe('web download errors', () => {
     expect(webDownloadConcurrency(false, true)).toBe(3);
     expect(webDownloadConcurrency(false, false)).toBe(1);
     expect(webPlatform.maxConcurrentDownloads).toBe(1);
+  });
+
+  it('keeps the selected Web download strategy consistent across an album', () => {
+    expect(resolveWebDownloadMode('stream', false, false)).toBe('stream');
+    expect(resolveWebDownloadMode('browser', true, true, true)).toBe('browser');
+    expect(resolveWebDownloadMode('auto', true, false)).toBe('stream');
+    expect(resolveWebDownloadMode('auto', false, false)).toBe('browser');
   });
 
   it('requires a fresh click when the browser download manager owns the file', () => {

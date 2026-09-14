@@ -303,6 +303,7 @@ main { padding: 30px; }
 .concurrency-setting strong { font-size: 12px; }
 .concurrency-setting small { color: var(--muted); font-size: 10px; }
 .concurrency-setting select { min-width: 84px; height: 34px; padding: 0 28px 0 10px; color: var(--ink); background-color: #fff; border: 1px solid #bcd1e5; border-radius: 8px; cursor: pointer; }
+.download-mode-setting select { min-width: 142px; }
 .library-display-panel .setting-row { min-height: 55px; padding: 8px 42px 8px 0; border-bottom: 0; }
 .library-display-panel .setting-copy strong { font-size: 12px; }
 .library-display-panel .setting-copy small { margin-top: 2px; font-size: 10px; }
@@ -502,6 +503,8 @@ main { padding: 30px; }
   .song-actions button { min-width: 0; min-height: 44px; padding: 0 7px; white-space: nowrap; }
   .library-hero, .subpage-heading, .about-hero { align-items: flex-start; flex-direction: column; }
   .library-display-options { grid-template-columns: 1fr; gap: 4px; }
+  .concurrency-setting { align-items: flex-start; flex-direction: column; gap: 10px; padding-block: 12px; }
+  .concurrency-setting select { width: 100%; min-height: 44px; }
   .library-hero { gap: 14px; }
   .library-count { padding: 0; }
   .settings-layout, .about-grid { grid-template-columns: 1fr; }
