@@ -12,11 +12,11 @@
 
 </div>
 
-## 📖 简介
+## 简介
 
 本项目是一款专为《明日方舟》塞壬唱片（Siren Records）开发的第三方音乐下载工具。可解析官网接口，批量获取并下载官方发布的无损音质（WAV）音乐资源，并自动匹配歌词与专辑封面。
 
-## ✨ 核心特性
+## 核心特性
 
 - **🎵 无损音质获取**：直接下载官网提供的 WAV 无损音源，并支持自定义输出格式（仅 WAV / WAV + FLAC / 仅 FLAC）。
 - **📥 灵活下载模式**：支持单曲下载、整张专辑下载、以及 ALL一键打包下载。
@@ -25,7 +25,7 @@
 - **🖥️ 跨平台 Web 版**：提供基于浏览器运行的网页版本，免去安装，支持 Windows、macOS、Linux 甚至手机端访问。
 - **⚙️ 稳定性优化**：自动处理网络代理兼容、请求超时回退、Windows 保留文件名冲突等边缘场景。
 
-## 📸 软件截图
+## 软件截图
 
 <!-- TODO: 请在仓库建立 assets 文件夹，将截图放进去，然后修改下方路径 -->
 <div align="center">
@@ -33,13 +33,13 @@
   <img src="assets/queue.png" width="45%" alt="下载队列" />
 </div>
 
-## 📦 下载与使用
+## 下载与使用
 
-### 1️⃣ Windows 桌面版（推荐）
+### Windows 桌面版（推荐）
 Windows 用户建议优先使用当前最稳定的 v5.5 桌面版客户端。
 👉 **[点击前往 Releases 下载 v5.5 桌面版](https://github.com/MXWF0/Siren-Records-Music-Downloader/releases/latest)**
 
-### 2️⃣ Web 跨平台版（免安装）
+### Web 跨平台版（免安装）
 支持 macOS、Linux 以及移动端用户，采用全新现代化 UI。复制下方链接到浏览器直接打开即可使用：
 🌐 **[塞壬音乐下载器 Web 版在线体验](https://mxwf0.github.io/Siren-Records-Music-Downloader/)**
 
@@ -52,7 +52,7 @@ Windows 用户建议优先使用当前最稳定的 v5.5 桌面版客户端。
 ---
 
 <details>
-<summary><h2>📝 更新日志 (Changelog)</h2></summary>
+<summary><h2> 更新日志 (Changelog)</h2></summary>
 
 ### v5.5
 
